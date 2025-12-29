@@ -138,6 +138,28 @@ class SplatfactoModelConfig(ModelConfig):
     """
     output_depth_during_training: bool = False
     """If True, output depth during training. Otherwise, only output depth during evaluation."""
+    depth_mode: Literal["rasterizer", "ellipsoid", "both"] = "rasterizer"
+    """Which depth to output in the `depth` channel.
+
+    - "rasterizer": use gsplat's RGB+ED depth (alpha-composited expected depth)
+    - "ellipsoid": use geometric ray–ellipsoid first-hit depth (slower; more stable across views)
+    - "both": output `depth` from rasterizer and also output `depth_ellipsoid`
+    """
+
+    ellipsoid_depth_k: float = 2.0
+    """Confidence parameter k for the ellipsoid surface: (x-mu)^T Sigma^{-1} (x-mu) = k."""
+    ellipsoid_depth_tile_size: int = 16
+    """Tile size (pixels) for candidate selection used by ellipsoid depth."""
+    ellipsoid_depth_tile_neighbor_radius: int = 1
+    """Neighbor tile radius (1 => 3x3 neighborhood) for ellipsoid depth candidate selection."""
+    ellipsoid_depth_max_gaussians_per_tile: int = 128
+    """Max Gaussians stored per tile for ellipsoid depth candidate selection."""
+    ellipsoid_depth_use_depth_hint: bool = True
+    """Use rasterizer depth as a per-pixel hint to prune ellipsoid intersection candidates."""
+    ellipsoid_depth_hint_rel_tol: float = 0.15
+    """Relative tolerance for depth hint pruning."""
+    ellipsoid_depth_hint_abs_tol: float = 0.05
+    """Absolute tolerance for depth hint pruning."""
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     """
     Classic mode of rendering will use the EWA volume splatting with a [0.3, 0.3] screen space blurring kernel. This
@@ -594,15 +616,54 @@ class SplatfactoModel(Model):
         else:
             depth_im = None
 
+        # Optional: geometric ellipsoid depth (ray–ellipsoid first hit).
+        depth_ellipsoid = None
+        if self.config.depth_mode in ["ellipsoid", "both"]:
+            try:
+                from nerfstudio.models.ellipsoid_depth import EllipsoidDepthConfig, compute_ellipsoid_depth
+
+                # Recreate the downscaled camera resolution used for rasterization so rays match H,W.
+                camera.rescale_output_resolution(1 / camera_scale_fac)
+                depth_cfg = EllipsoidDepthConfig(
+                    k=self.config.ellipsoid_depth_k,
+                    tile_size=self.config.ellipsoid_depth_tile_size,
+                    tile_neighbor_radius=self.config.ellipsoid_depth_tile_neighbor_radius,
+                    max_gaussians_per_tile=self.config.ellipsoid_depth_max_gaussians_per_tile,
+                    use_depth_hint=self.config.ellipsoid_depth_use_depth_hint,
+                    depth_hint_rel_tol=self.config.ellipsoid_depth_hint_rel_tol,
+                    depth_hint_abs_tol=self.config.ellipsoid_depth_hint_abs_tol,
+                )
+                depth_ellipsoid = compute_ellipsoid_depth(
+                    camera=camera,
+                    means=means_crop,
+                    scales=torch.exp(scales_crop),
+                    quats=quats_crop,
+                    depth_hint=depth_im if depth_im is not None else None,
+                    alpha_mask=alpha.squeeze(0),
+                    config=depth_cfg,
+                )
+            except Exception as e:
+                CONSOLE.log(f"[yellow]Ellipsoid depth failed, falling back to rasterizer depth: {e}[/yellow]")
+                depth_ellipsoid = None
+            finally:
+                camera.rescale_output_resolution(camera_scale_fac)  # type: ignore
+
         if background.shape[0] == 3 and not self.training:
             background = background.expand(H, W, 3)
 
-        return {
+        outputs: Dict[str, Union[torch.Tensor, List]] = {
             "rgb": rgb.squeeze(0),  # type: ignore
             "depth": depth_im,  # type: ignore
             "accumulation": alpha.squeeze(0),  # type: ignore
             "background": background,  # type: ignore
         }  # type: ignore
+
+        if depth_ellipsoid is not None:
+            outputs["depth_ellipsoid"] = depth_ellipsoid
+            if self.config.depth_mode == "ellipsoid":
+                outputs["depth"] = depth_ellipsoid
+
+        return outputs
 
     def get_gt_img(self, image: torch.Tensor):
         """Compute groundtruth image with iteration dependent downscale factor for evaluation purpose
