@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple, Type, Union
 
+import dataclasses
 import torch
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
 
@@ -552,12 +553,14 @@ class SplatfactoModel(Model):
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
 
         camera_scale_fac = self._get_downscale_factor()
-        camera.rescale_output_resolution(1 / camera_scale_fac)
+        # IMPORTANT: never mutate the viewer's camera in-place. `rescale_output_resolution()` modifies
+        # height/width with integer rounding, and repeated calls can drift to 0x0 and yield a black viewer.
+        render_camera = dataclasses.replace(camera)
+        render_camera.rescale_output_resolution(1 / camera_scale_fac)
         viewmat = get_viewmat(optimized_camera_to_world)
-        K = camera.get_intrinsics_matrices().cuda()
-        W, H = int(camera.width.item()), int(camera.height.item())
+        K = render_camera.get_intrinsics_matrices().cuda()
+        W, H = int(render_camera.width.item()), int(render_camera.height.item())
         self.last_size = (H, W)
-        camera.rescale_output_resolution(camera_scale_fac)  # type: ignore
 
         # apply the compensation of screen space blurring to gaussians
         if self.config.rasterize_mode not in ["antialiased", "classic"]:
@@ -607,8 +610,8 @@ class SplatfactoModel(Model):
 
         # apply bilateral grid
         if self.config.use_bilateral_grid and self.training:
-            if camera.metadata is not None and "cam_idx" in camera.metadata:
-                rgb = self._apply_bilateral_grid(rgb, camera.metadata["cam_idx"], H, W)
+            if render_camera.metadata is not None and "cam_idx" in render_camera.metadata:
+                rgb = self._apply_bilateral_grid(rgb, render_camera.metadata["cam_idx"], H, W)
 
         if render_mode == "RGB+ED":
             depth_im = render[:, ..., 3:4]
@@ -624,8 +627,6 @@ class SplatfactoModel(Model):
             try:
                 from nerfstudio.models.ellipsoid_depth import EllipsoidDepthConfig, compute_ellipsoid_depth
 
-                # Recreate the downscaled camera resolution used for rasterization so rays match H,W.
-                camera.rescale_output_resolution(1 / camera_scale_fac)
                 depth_cfg = EllipsoidDepthConfig(
                     k=self.config.ellipsoid_depth_k,
                     tile_size=self.config.ellipsoid_depth_tile_size,
@@ -637,7 +638,7 @@ class SplatfactoModel(Model):
                     depth_hint_abs_tol=self.config.ellipsoid_depth_hint_abs_tol,
                 )
                 depth_ellipsoid = compute_ellipsoid_depth(
-                    camera=camera,
+                    camera=render_camera,
                     means=means_crop,
                     scales=torch.exp(scales_crop),
                     quats=quats_crop,
@@ -648,8 +649,6 @@ class SplatfactoModel(Model):
             except Exception as e:
                 CONSOLE.log(f"[yellow]Ellipsoid depth failed, falling back to rasterizer depth: {e}[/yellow]")
                 depth_ellipsoid = None
-            finally:
-                camera.rescale_output_resolution(camera_scale_fac)  # type: ignore
 
         if background.shape[0] == 3 and not self.training:
             background = background.expand(H, W, 3)
