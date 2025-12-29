@@ -617,8 +617,10 @@ class SplatfactoModel(Model):
             depth_im = None
 
         # Optional: geometric ellipsoid depth (ray–ellipsoid first hit).
+        # IMPORTANT: this is intentionally disabled during training to avoid slowing training down
+        # and to prevent GPU OOM from additional large temporary allocations.
         depth_ellipsoid = None
-        if self.config.depth_mode in ["ellipsoid", "both"]:
+        if (not self.training) and self.config.depth_mode in ["ellipsoid", "both"]:
             try:
                 from nerfstudio.models.ellipsoid_depth import EllipsoidDepthConfig, compute_ellipsoid_depth
 
@@ -629,6 +631,7 @@ class SplatfactoModel(Model):
                     tile_size=self.config.ellipsoid_depth_tile_size,
                     tile_neighbor_radius=self.config.ellipsoid_depth_tile_neighbor_radius,
                     max_gaussians_per_tile=self.config.ellipsoid_depth_max_gaussians_per_tile,
+                    ray_chunk_size=8192,
                     use_depth_hint=self.config.ellipsoid_depth_use_depth_hint,
                     depth_hint_rel_tol=self.config.ellipsoid_depth_hint_rel_tol,
                     depth_hint_abs_tol=self.config.ellipsoid_depth_hint_abs_tol,

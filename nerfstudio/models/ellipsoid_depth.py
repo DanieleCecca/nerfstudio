@@ -49,6 +49,9 @@ class EllipsoidDepthConfig:
     max_gaussians_per_tile: int = 128
     """Cap on Gaussians stored per tile (largest-z pruning happens implicitly)."""
 
+    ray_chunk_size: int = 8192
+    """Number of rays processed per chunk to bound peak GPU memory."""
+
     use_depth_hint: bool = True
     """If True, filter candidates by proximity to a per-pixel depth hint (if provided)."""
 
@@ -394,41 +397,47 @@ def compute_ellipsoid_depth(
     if active_idx.numel() == 0:
         return torch.zeros((H, W, 1), device=origins.device, dtype=origins.dtype)
 
-    cand_idx = _gather_neighbor_tiles(
-        tile_table=tile_table,
-        pixel_tile_id=pix_tile_id[active_idx],
-        width=W,
-        height=H,
-        tile_size=config.tile_size,
-        neighbor_radius=config.tile_neighbor_radius,
-    )  # [R_active, C]
-
-    # Gather candidate camera depths for hint filtering.
-    cand_z = None
-    if depth_hint_flat is not None:
-        valid_cand = cand_idx >= 0
-        safe_idx = torch.where(valid_cand, cand_idx, torch.zeros_like(cand_idx))
-        cand_z = z_cam[safe_idx]
-        cand_z = torch.where(valid_cand, cand_z, torch.full_like(cand_z, -torch.inf))
-
-    t_active = _ray_ellipsoid_first_hit(
-        origins=origins[active_idx],
-        directions=directions[active_idx],
-        cand_idx=cand_idx,
-        means=means,
-        inv_scales2=inv_scales2,
-        rotmats=rotmats,
-        k=config.k,
-        eps=config.eps,
-        depth_hint=depth_hint_flat[active_idx] if depth_hint_flat is not None else None,
-        cand_z_cam=cand_z,
-        depth_hint_rel_tol=config.depth_hint_rel_tol,
-        depth_hint_abs_tol=config.depth_hint_abs_tol,
-    )
-
-    # Scatter back into full image.
+    # Scatter back into full image. We fill in chunks to keep peak memory bounded.
     depth_flat = torch.zeros((H * W,), device=origins.device, dtype=origins.dtype)
-    depth_flat[active_idx] = t_active
+
+    chunk = max(int(config.ray_chunk_size), 1)
+    for start in range(0, active_idx.numel(), chunk):
+        sel = active_idx[start : start + chunk]
+
+        cand_idx = _gather_neighbor_tiles(
+            tile_table=tile_table,
+            pixel_tile_id=pix_tile_id[sel],
+            width=W,
+            height=H,
+            tile_size=config.tile_size,
+            neighbor_radius=config.tile_neighbor_radius,
+        )  # [R_chunk, C]
+
+        # Gather candidate camera depths for hint filtering (chunked).
+        cand_z = None
+        if depth_hint_flat is not None:
+            valid_cand = cand_idx >= 0
+            safe_idx = torch.where(valid_cand, cand_idx, torch.zeros_like(cand_idx))
+            cand_z = z_cam[safe_idx]
+            cand_z = torch.where(valid_cand, cand_z, torch.full_like(cand_z, -torch.inf))
+
+        t_chunk = _ray_ellipsoid_first_hit(
+            origins=origins[sel],
+            directions=directions[sel],
+            cand_idx=cand_idx,
+            means=means,
+            inv_scales2=inv_scales2,
+            rotmats=rotmats,
+            k=config.k,
+            eps=config.eps,
+            depth_hint=depth_hint_flat[sel] if depth_hint_flat is not None else None,
+            cand_z_cam=cand_z,
+            depth_hint_rel_tol=config.depth_hint_rel_tol,
+            depth_hint_abs_tol=config.depth_hint_abs_tol,
+        )
+
+        depth_flat[sel] = t_chunk
+
     depth = depth_flat.view(H, W, 1)
     return depth
 
