@@ -193,7 +193,6 @@ def _make_tile_table_from_gsplat(
         False,  # sparse_grad
         False,  # calc_compensations
         "pinhole",  # camera_model
-        None,  # opacities
     )
     # Drop batch/camera dims -> [N, 2], [N, 2], [N]
     means2d = means2d[0, 0]
