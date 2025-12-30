@@ -168,59 +168,120 @@ def _make_tile_table_from_gsplat(
     dtype = means.dtype
 
     # Prepare viewmats / intrinsics in gsplat conventions.
-    viewmat = _get_gsplat_viewmat(camera.camera_to_worlds[0].to(device=device, dtype=dtype))
-    viewmats = viewmat[None, None, ...]  # [1, 1, 4, 4] (batch..., C, 4, 4)
-    Ks = camera.get_intrinsics_matrices().to(device=device, dtype=dtype)  # [1, 3, 3]
-    Ks = Ks[None, ...]  # [1, 1, 3, 3]
+    viewmat = _get_gsplat_viewmat(camera.camera_to_worlds[0].to(device=device, dtype=dtype))  # [4,4]
+    # We'll try both calling conventions:
+    # - batched: means [1,N,3], viewmats [1,1,4,4], Ks [1,1,3,3]
+    # - unbatched: means [N,3], viewmats [1,4,4], Ks [1,3,3]
+    viewmats_batched = viewmat[None, None, ...]
+    Ks_base = camera.get_intrinsics_matrices().to(device=device, dtype=dtype)  # [1, 3, 3]
+    Ks_batched = Ks_base[None, ...]
+    viewmats_unbatched = viewmat[None, ...]
+    Ks_unbatched = Ks_base
 
     # Project Gaussians to 2D (matches rasterizer behavior).
     # Returns: radii, means2d, depths, conics, compensations
     # NOTE: use positional args for compatibility with gsplat builds that don't accept kwargs.
-    radii, means2d, depths, _conics, _comp = gsplat.fully_fused_projection(
-        means[None, ...],  # means
-        None,  # covars
-        quats[None, ...],  # quats
-        scales[None, ...],  # scales
-        viewmats,  # viewmats
-        Ks,  # Ks
-        int(width),
-        int(height),
-        0.3,  # eps2d
-        0.01,  # near_plane
-        1e10,  # far_plane
-        0.0,  # radius_clip
-        False,  # packed
-        False,  # sparse_grad
-        False,  # calc_compensations
-        "pinhole",  # camera_model
-    )
-    # Drop batch/camera dims -> [N, 2], [N, 2], [N]
-    means2d = means2d[0, 0]
-    radii = radii[0, 0]
-    depths = depths[0, 0]
+    def _call_fully_fused(means_in, quats_in, scales_in, viewmats_in, Ks_in):
+        return gsplat.fully_fused_projection(
+            means_in,
+            None,  # covars
+            quats_in,
+            scales_in,
+            viewmats_in,
+            Ks_in,
+            int(width),
+            int(height),
+            0.3,  # eps2d
+            0.01,  # near_plane
+            1e10,  # far_plane
+            0.0,  # radius_clip
+            False,  # packed
+            False,  # sparse_grad
+            False,  # calc_compensations
+            "pinhole",  # camera_model
+        )
+
+    try:
+        radii, means2d, depths, _conics, _comp = _call_fully_fused(
+            means[None, ...],
+            quats[None, ...],
+            scales[None, ...],
+            viewmats_batched,
+            Ks_batched,
+        )
+    except Exception:
+        # Fallback for gsplat variants that don't support batch dims on means/quats/scales.
+        radii, means2d, depths, _conics, _comp = _call_fully_fused(
+            means,
+            quats,
+            scales,
+            viewmats_unbatched,
+            Ks_unbatched,
+        )
+
+    # Normalize shapes to per-gaussian tensors: means2d [N,2], radii [N,2], depths [N]
+    # Possible output shapes across versions:
+    # - [..., C, N, 2]  (dim=4) => take [0,0]
+    # - [C, N, 2]       (dim=3) => take [0]
+    # - [N, 2]          (dim=2) => as-is
+    if means2d.dim() == 4:
+        means2d = means2d[0, 0]
+        radii = radii[0, 0]
+        depths = depths[0, 0]
+    elif means2d.dim() == 3:
+        means2d = means2d[0]
+        radii = radii[0]
+        depths = depths[0]
+    elif means2d.dim() == 2:
+        # already [N,2]
+        pass
+    else:
+        raise RuntimeError(f"Unexpected means2d shape from gsplat: {means2d.shape}")
+
+    if depths.dim() != 1 or means2d.shape[0] != means.shape[0]:
+        raise RuntimeError(f"Unexpected gsplat projection outputs: means2d={means2d.shape}, depths={depths.shape}")
 
     tile_width = int(math.ceil(width / float(tile_size)))
     tile_height = int(math.ceil(height / float(tile_size)))
     num_tiles = tile_width * tile_height
 
     # Compute tile intersections (sorted by tile|depth by default).
-    _tiles_per_gauss, isect_ids, flatten_ids = gsplat.isect_tiles(
-        means2d[None, ...],  # means2d
-        radii[None, ...],  # radii
-        depths[None, ...],  # depths
-        int(tile_size),
-        int(tile_width),
-        int(tile_height),
-        True,  # sort
-        False,  # segmented
-        False,  # packed
-        None,  # n_images
-        None,  # image_ids
-        None,  # gaussian_ids
-    )
+    # Compute tile intersections (sorted by tile|depth by default).
+    # Different builds accept either [N,...] or [1,N,...] for a single image; try both.
+    try:
+        _tiles_per_gauss, isect_ids, flatten_ids = gsplat.isect_tiles(
+            means2d[None, ...],
+            radii[None, ...],
+            depths[None, ...],
+            int(tile_size),
+            int(tile_width),
+            int(tile_height),
+            True,  # sort
+            False,  # segmented
+            False,  # packed
+            None,  # n_images
+            None,  # image_ids
+            None,  # gaussian_ids
+        )
+    except Exception:
+        _tiles_per_gauss, isect_ids, flatten_ids = gsplat.isect_tiles(
+            means2d,
+            radii,
+            depths,
+            int(tile_size),
+            int(tile_width),
+            int(tile_height),
+            True,  # sort
+            False,  # segmented
+            False,  # packed
+            None,  # n_images
+            None,  # image_ids
+            None,  # gaussian_ids
+        )
 
     # Offsets per tile into the sorted intersection list.
     # Shape: [I, tile_h, tile_w] where I=1.
+    # Offsets per tile into the sorted intersection list.
     isect_offsets = gsplat.isect_offset_encode(isect_ids, 1, int(tile_width), int(tile_height))
     offsets_flat = isect_offsets.reshape(-1).to(torch.long)  # [num_tiles]
 
