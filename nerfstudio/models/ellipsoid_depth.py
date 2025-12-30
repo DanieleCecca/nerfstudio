@@ -175,24 +175,25 @@ def _make_tile_table_from_gsplat(
 
     # Project Gaussians to 2D (matches rasterizer behavior).
     # Returns: radii, means2d, depths, conics, compensations
+    # NOTE: use positional args for compatibility with gsplat builds that don't accept kwargs.
     radii, means2d, depths, _conics, _comp = gsplat.fully_fused_projection(
-        means=means[None, ...],  # [1, N, 3]
-        covars=None,
-        quats=quats[None, ...],  # [1, N, 4]
-        scales=scales[None, ...],  # [1, N, 3]
-        viewmats=viewmats,  # [1, 1, 4, 4]
-        Ks=Ks,  # [1, 1, 3, 3]
-        width=width,
-        height=height,
-        eps2d=0.3,
-        near_plane=0.01,
-        far_plane=1e10,
-        radius_clip=0.0,
-        packed=False,
-        sparse_grad=False,
-        calc_compensations=False,
-        camera_model="pinhole",
-        opacities=None,
+        means[None, ...],  # means
+        None,  # covars
+        quats[None, ...],  # quats
+        scales[None, ...],  # scales
+        viewmats,  # viewmats
+        Ks,  # Ks
+        int(width),
+        int(height),
+        0.3,  # eps2d
+        0.01,  # near_plane
+        1e10,  # far_plane
+        0.0,  # radius_clip
+        False,  # packed
+        False,  # sparse_grad
+        False,  # calc_compensations
+        "pinhole",  # camera_model
+        None,  # opacities
     )
     # Drop batch/camera dims -> [N, 2], [N, 2], [N]
     means2d = means2d[0, 0]
@@ -205,23 +206,23 @@ def _make_tile_table_from_gsplat(
 
     # Compute tile intersections (sorted by tile|depth by default).
     _tiles_per_gauss, isect_ids, flatten_ids = gsplat.isect_tiles(
-        means2d=means2d[None, ...],  # [1, N, 2]
-        radii=radii[None, ...],  # [1, N, 2]
-        depths=depths[None, ...],  # [1, N]
-        tile_size=int(tile_size),
-        tile_width=tile_width,
-        tile_height=tile_height,
-        sort=True,
-        segmented=False,
-        packed=False,
-        n_images=None,
-        image_ids=None,
-        gaussian_ids=None,
+        means2d[None, ...],  # means2d
+        radii[None, ...],  # radii
+        depths[None, ...],  # depths
+        int(tile_size),
+        int(tile_width),
+        int(tile_height),
+        True,  # sort
+        False,  # segmented
+        False,  # packed
+        None,  # n_images
+        None,  # image_ids
+        None,  # gaussian_ids
     )
 
     # Offsets per tile into the sorted intersection list.
     # Shape: [I, tile_h, tile_w] where I=1.
-    isect_offsets = gsplat.isect_offset_encode(isect_ids=isect_ids, n_images=1, tile_width=tile_width, tile_height=tile_height)
+    isect_offsets = gsplat.isect_offset_encode(isect_ids, 1, int(tile_width), int(tile_height))
     offsets_flat = isect_offsets.reshape(-1).to(torch.long)  # [num_tiles]
 
     n_isects = int(flatten_ids.shape[0])
