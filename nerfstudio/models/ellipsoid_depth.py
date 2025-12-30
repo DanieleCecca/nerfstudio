@@ -119,7 +119,7 @@ def _get_gsplat_viewmat(camera_to_world_3x4: torch.Tensor) -> torch.Tensor:
     R = camera_to_world_3x4[:3, :3]  # [3, 3]
     T = camera_to_world_3x4[:3, 3:4]  # [3, 1]
     # flip the z and y axes to align with gsplat conventions
-    R = R * torch.tensor([[1, -1, -1]], device=R.device, dtype=R.dtype)
+    R = R * torch.tensor([1, -1, -1], device=R.device, dtype=R.dtype)[None, :]
     R_inv = R.transpose(0, 1)
     T_inv = -R_inv @ T
     viewmat = torch.zeros((4, 4), device=R.device, dtype=R.dtype)
@@ -142,7 +142,7 @@ def _camera_world_to_camera_matrix(camera: Cameras, device: torch.device, dtype:
 def _make_tile_table_from_gsplat(
     means: torch.Tensor,
     scales: torch.Tensor,
-    quats_xyzw: torch.Tensor,
+    quats: torch.Tensor,
     camera: Cameras,
     width: int,
     height: int,
@@ -150,84 +150,94 @@ def _make_tile_table_from_gsplat(
     max_per_tile: int,
     eps: float,
 ) -> torch.Tensor:
-    """Use gsplat's own binning/sorting to build a [num_tiles, max_per_tile] tile table.
+    """Use gsplat's projection + tile-intersection sorting to build a [num_tiles, max_per_tile] tile table.
 
-    Requires gsplat to be installed in the runtime environment.
+    This uses the same kernels as gsplat rasterization:
+    - `fully_fused_projection(...)` to get `means2d`, `radii`, `depths`
+    - `isect_tiles(...)` to map Gaussians to intersecting tiles (sorted by tile|depth)
+    - `isect_offset_encode(...)` to compute per-tile ranges into the sorted intersection list
     """
     import math
 
     try:
         import gsplat  # type: ignore
     except Exception as e:  # pragma: no cover
-        raise RuntimeError(f"gsplat is required for method='gsplat' but could not be imported: {e}") from e
+        raise RuntimeError(f"gsplat is required but could not be imported: {e}") from e
 
     device = means.device
     dtype = means.dtype
 
-    # Intrinsics (scalars)
-    K = camera.get_intrinsics_matrices()[0].to(device=device, dtype=dtype)
-    fx = float(K[0, 0].item())
-    fy = float(K[1, 1].item())
-    cx = float(K[0, 2].item())
-    cy = float(K[1, 2].item())
-
-    # gsplat expects quats in [w,x,y,z] (docstring), while Splatfacto stores xyzw.
-    quats_wxyz = quats_xyzw[..., [3, 0, 1, 2]].contiguous()
-
-    # view matrix in gsplat conventions
+    # Prepare viewmats / intrinsics in gsplat conventions.
     viewmat = _get_gsplat_viewmat(camera.camera_to_worlds[0].to(device=device, dtype=dtype))
+    viewmats = viewmat[None, None, ...]  # [1, 1, 4, 4] (batch..., C, 4, 4)
+    Ks = camera.get_intrinsics_matrices().to(device=device, dtype=dtype)  # [1, 3, 3]
+    Ks = Ks[None, ...]  # [1, 1, 3, 3]
 
-    # Project gaussians and compute which tiles they hit.
-    # Returns: xys, depths, radii, conics, compensation, num_tiles_hit, cov3d
-    xys, depths, radii, _conics, _comp, num_tiles_hit, _cov3d = gsplat.project_gaussians(
-        means,
-        scales,
-        1.0,  # glob_scale
-        quats_wxyz,
-        viewmat[None, ...],
-        fx,
-        fy,
-        cx,
-        cy,
-        height,
-        width,
-        int(tile_size),
-        0.01,  # clip_thresh
+    # Project Gaussians to 2D (matches rasterizer behavior).
+    # Returns: radii, means2d, depths, conics, compensations
+    radii, means2d, depths, _conics, _comp = gsplat.fully_fused_projection(
+        means=means[None, ...],  # [1, N, 3]
+        covars=None,
+        quats=quats[None, ...],  # [1, N, 4]
+        scales=scales[None, ...],  # [1, N, 3]
+        viewmats=viewmats,  # [1, 1, 4, 4]
+        Ks=Ks,  # [1, 1, 3, 3]
+        width=width,
+        height=height,
+        eps2d=0.3,
+        near_plane=0.01,
+        far_plane=1e10,
+        radius_clip=0.0,
+        packed=False,
+        sparse_grad=False,
+        calc_compensations=False,
+        camera_model="pinhole",
+        opacities=None,
+    )
+    # Drop batch/camera dims -> [N, 2], [N, 2], [N]
+    means2d = means2d[0, 0]
+    radii = radii[0, 0]
+    depths = depths[0, 0]
+
+    tile_width = int(math.ceil(width / float(tile_size)))
+    tile_height = int(math.ceil(height / float(tile_size)))
+    num_tiles = tile_width * tile_height
+
+    # Compute tile intersections (sorted by tile|depth by default).
+    _tiles_per_gauss, isect_ids, flatten_ids = gsplat.isect_tiles(
+        means2d=means2d[None, ...],  # [1, N, 2]
+        radii=radii[None, ...],  # [1, N, 2]
+        depths=depths[None, ...],  # [1, N]
+        tile_size=int(tile_size),
+        tile_width=tile_width,
+        tile_height=tile_height,
+        sort=True,
+        segmented=False,
+        packed=False,
+        n_images=None,
+        image_ids=None,
+        gaussian_ids=None,
     )
 
-    # num_tiles_hit: [N] (int)
-    num_intersects, cum_tiles_hit = gsplat.compute_cumulative_intersects(num_tiles_hit)
+    # Offsets per tile into the sorted intersection list.
+    # Shape: [I, tile_h, tile_w] where I=1.
+    isect_offsets = gsplat.isect_offset_encode(isect_ids=isect_ids, n_images=1, tile_width=tile_width, tile_height=tile_height)
+    offsets_flat = isect_offsets.reshape(-1).to(torch.long)  # [num_tiles]
 
-    tiles_x = int(math.ceil(width / tile_size))
-    tiles_y = int(math.ceil(height / tile_size))
-    tile_bounds = (tiles_x, tiles_y, 1)
-    num_tiles = tiles_x * tiles_y
+    n_isects = int(flatten_ids.shape[0])
+    # End offset is next tile start; last tile ends at n_isects.
+    ends_flat = torch.empty_like(offsets_flat)
+    ends_flat[:-1] = offsets_flat[1:]
+    ends_flat[-1] = n_isects
 
-    # Bin and sort intersections (tile | depth ordering), returns tile_bins per tile.
-    (
-        _isect_ids_unsorted,
-        _gaussian_ids_unsorted,
-        _isect_ids_sorted,
-        gaussian_ids_sorted,
-        tile_bins,
-    ) = gsplat.bin_and_sort_gaussians(
-        int(means.shape[0]),
-        int(num_intersects),
-        xys,
-        depths,
-        radii,
-        cum_tiles_hit,
-        tile_bounds,
-        int(tile_size),
-    )
+    # flatten_ids are in [I*N]; for I=1, gaussian_id = flatten_id.
+    # For safety, mod by N anyway.
+    gaussian_ids_sorted = (flatten_ids.to(torch.long) % means.shape[0]).contiguous()
 
-    # tile_bins[t] gives [lower, upper) indices into gaussian_ids_sorted for that tile.
     tile_table = torch.full((num_tiles, max_per_tile), -1, device=device, dtype=torch.long)
-
-    # Loop over tiles (usually <= ~4096), cheap.
     for t in range(num_tiles):
-        lo = int(tile_bins[t, 0].item())
-        hi = int(tile_bins[t, 1].item())
+        lo = int(offsets_flat[t].item())
+        hi = int(ends_flat[t].item())
         if hi <= lo:
             continue
         ids = gaussian_ids_sorted[lo:hi]
@@ -235,6 +245,8 @@ def _make_tile_table_from_gsplat(
             continue
         tile_table[t, : min(max_per_tile, ids.numel())] = ids[:max_per_tile]
 
+    # Return also depths for hint pruning to avoid recomputing; we stash it on the function object.
+    _make_tile_table_from_gsplat._last_depths = depths  # type: ignore[attr-defined]
     return tile_table
 
 
@@ -399,7 +411,7 @@ def compute_ellipsoid_depth(
     tile_table = _make_tile_table_from_gsplat(
         means=means,
         scales=scales,
-        quats_xyzw=quats,
+        quats=quats,
         camera=camera,
         width=W,
         height=H,
@@ -408,32 +420,11 @@ def compute_ellipsoid_depth(
         eps=config.eps,
     )
 
-    # Also grab per-gaussian camera depth from gsplat for optional hint pruning.
-    # We recompute a lightweight projection via gsplat (no need for our own projection code).
-    import gsplat  # type: ignore
-
-    K = camera.get_intrinsics_matrices()[0].to(device=device, dtype=dtype)
-    fx = float(K[0, 0].item())
-    fy = float(K[1, 1].item())
-    cx = float(K[0, 2].item())
-    cy = float(K[1, 2].item())
-    quats_wxyz = quats[..., [3, 0, 1, 2]].contiguous()
-    viewmat = _get_gsplat_viewmat(camera.camera_to_worlds[0].to(device=device, dtype=dtype))
-    _xys, z_cam, _radii, *_rest = gsplat.project_gaussians(
-        means,
-        scales,
-        1.0,
-        quats_wxyz,
-        viewmat[None, ...],
-        fx,
-        fy,
-        cx,
-        cy,
-        H,
-        W,
-        int(config.tile_size),
-        0.01,
-    )
+    # Per-gaussian camera z-depth for optional hint pruning (from the same gsplat projection).
+    z_cam = getattr(_make_tile_table_from_gsplat, "_last_depths", None)
+    if z_cam is None:
+        # Should never happen; fallback to no pruning.
+        z_cam = torch.full((means.shape[0],), 1e10, device=device, dtype=dtype)
 
     # Per-pixel tile ids (computed from pixel coordinates).
     px = torch.arange(W, device=origins.device, dtype=torch.long)
