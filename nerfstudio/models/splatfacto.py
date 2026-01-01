@@ -645,6 +645,7 @@ class SplatfactoModel(Model):
                     depth_hint=depth_im if depth_im is not None else None,
                     alpha_mask=alpha.squeeze(0),
                     config=depth_cfg,
+                    gsplat_meta=self.info,
                 )
             except Exception as e:
                 CONSOLE.log(f"[yellow]Ellipsoid depth failed, falling back to rasterizer depth: {e}[/yellow]")
