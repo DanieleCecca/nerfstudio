@@ -78,6 +78,12 @@ dependencies = [
 
 [project.optional-dependencies]
 
+# Depth Anything 3 (optional, viewer-only depth)
+da3 = [
+    "huggingface_hub>=0.20.0",
+    "depth-anything-3 @ git+https://github.com/ByteDance-Seed/Depth-Anything-3.git",
+]
+
 # Generative related dependencies
 gen = [
     "diffusers==0.16.1",

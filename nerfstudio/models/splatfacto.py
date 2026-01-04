@@ -161,6 +161,18 @@ class SplatfactoModelConfig(ModelConfig):
     """Relative tolerance for depth hint pruning."""
     ellipsoid_depth_hint_abs_tol: float = 0.05
     """Absolute tolerance for depth hint pruning."""
+
+    da3_depth_enabled: bool = False
+    """If True, compute Depth Anything 3 metric depth from the rendered RGB and output it as `depth_da3` (eval only)."""
+
+    da3_model_id: str = "depth-anything/DA3METRIC-LARGE"
+    """HuggingFace model id for DA3 metric depth."""
+
+    da3_max_side: int = 384
+    """Downscale rendered RGB so max(H,W)<=da3_max_side for DA3 inference (speed/memory)."""
+
+    da3_use_half: bool = True
+    """Use fp16 inference for DA3 on CUDA (if available)."""
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     """
     Classic mode of rendering will use the EWA volume splatting with a [0.3, 0.3] screen space blurring kernel. This
@@ -660,6 +672,24 @@ class SplatfactoModel(Model):
             "accumulation": alpha.squeeze(0),  # type: ignore
             "background": background,  # type: ignore
         }  # type: ignore
+
+        # Optional: Depth Anything 3 metric depth from rendered RGB (viewer visualization).
+        if (not self.training) and self.config.da3_depth_enabled:
+            try:
+                from nerfstudio.models.da3_depth import get_da3_metric_estimator
+
+                est = get_da3_metric_estimator(
+                    model_id=self.config.da3_model_id.lower(),
+                    max_side=self.config.da3_max_side,
+                    use_half=self.config.da3_use_half,
+                    device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                )
+                K0 = render_camera.get_intrinsics_matrices()[0].to(self.device)
+                focal = float(((K0[0, 0] + K0[1, 1]) * 0.5).item())
+                depth_da3 = est.infer_metric_depth(rgb.squeeze(0), focal_px=focal)
+                outputs["depth_da3"] = depth_da3
+            except Exception as e:
+                CONSOLE.log(f"[yellow]DA3 depth failed, skipping: {e}[/yellow]")
 
         if depth_ellipsoid is not None:
             outputs["depth_ellipsoid"] = depth_ellipsoid
