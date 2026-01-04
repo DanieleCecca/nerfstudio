@@ -70,8 +70,10 @@ class DA3MetricDepthEstimator:
 
         model = DepthAnything3.from_pretrained(self.config.model_id)
         model = model.to(device=self.device)
-        if self.device.type == "cuda" and self.config.use_half:
-            model = model.half()
+        # Keep model in float32 for maximum compatibility across DA3 versions.
+        # If `use_half` is enabled, we use autocast during inference instead of forcing `.half()`,
+        # which can lead to dtype mismatches inside the model's preprocessing/inference pipeline.
+        model = model.float()
         self._model = model
 
     @torch.no_grad()
@@ -90,10 +92,9 @@ class DA3MetricDepthEstimator:
 
         H, W, _ = rgb.shape
         img = rgb.permute(2, 0, 1).unsqueeze(0)  # [1,3,H,W]
-        img = img.to(
-            device=self.device,
-            dtype=torch.float16 if (self.device.type == "cuda" and self.config.use_half) else torch.float32,
-        )
+        # Always use float32 for the intermediate tensor. DA3's internal preprocessing
+        # doesn't play well with mixed fp16/fp32 inputs.
+        img = img.to(device=self.device, dtype=torch.float32)
 
         # Resize for speed.
         scale = 1.0
@@ -110,6 +111,7 @@ class DA3MetricDepthEstimator:
         # We convert to uint8 CPU for compatibility with the public API.
         img_uint8 = torch.clamp(img_in[0].permute(1, 2, 0) * 255.0, 0, 255).to(torch.uint8).cpu().numpy()
 
+        # Run inference in float32 (autocast removed due to DA3 internal dtype issues).
         pred_obj = self._model.inference([img_uint8])
         pred = torch.from_numpy(pred_obj.depth[0]).to(device=self.device, dtype=torch.float32)  # [h,w]
 

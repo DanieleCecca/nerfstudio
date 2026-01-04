@@ -145,6 +145,10 @@ def _make_tile_table_from_gsplat_meta(
     max_per_tile: int,
 ) -> Tuple[torch.Tensor, int, int, int]:
     """Build per-tile candidate lists using gsplat rasterization meta (no extra gsplat calls)."""
+    required_keys = ["tile_width", "tile_height", "tile_size", "flatten_ids", "isect_offsets"]
+    missing = [k for k in required_keys if k not in meta]
+    if missing:
+        raise KeyError(f"gsplat_meta missing required keys: {missing}. Available keys: {list(meta.keys())}")
     tile_width = int(meta["tile_width"])
     tile_height = int(meta["tile_height"])
     tile_size = int(meta["tile_size"])
