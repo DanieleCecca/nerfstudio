@@ -28,18 +28,24 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 from nerfstudio.cameras.cameras import Cameras
+from nerfstudio.utils.rich_utils import CONSOLE
 
 
 @dataclass
 class EllipsoidDepthConfig:
     """Config for ellipsoid depth estimation."""
 
-    k: float = 2.0
-    """Confidence parameter in (x-mu)^T Sigma^{-1} (x-mu) = k."""
-
-    # NOTE: We intentionally only support gsplat-based binning/sorting.
-    # The previous heuristic "tile" mode (center-only projection) was removed because it can disagree
-    # with gsplat's true footprint-based tile hits and is harder to tune robustly.
+    k: float = 9.0
+    """Confidence parameter in (x-mu)^T Sigma^{-1} (x-mu) = k.
+    
+    Interpretation (for 3D Gaussian):
+      k=1   -> ~1σ surface (~39% volume)
+      k=4   -> ~2σ surface (~86% volume)  
+      k=9   -> ~3σ surface (~99% volume) [RECOMMENDED]
+      k=16  -> ~4σ surface
+    
+    Larger k = bigger ellipsoids = more ray hits but less "tight" surface.
+    """
 
     tile_size: int = 16
     """Tile size (pixels) used for screen-space binning."""
@@ -47,20 +53,36 @@ class EllipsoidDepthConfig:
     tile_neighbor_radius: int = 1
     """How many neighboring tiles to include (1 => 3x3 neighborhood)."""
 
-    max_gaussians_per_tile: int = 128
+    max_gaussians_per_tile: int = 256
     """Cap on Gaussians stored per tile (largest-z pruning happens implicitly)."""
 
     ray_chunk_size: int = 8192
     """Number of rays processed per chunk to bound peak GPU memory."""
 
-    use_depth_hint: bool = True
-    """If True, filter candidates by proximity to a per-pixel depth hint (if provided)."""
+    use_depth_hint: bool = False
+    """If True, filter candidates by proximity to a per-pixel depth hint.
+    
+    WARNING: This can be overly aggressive and reject valid intersections.
+    Only enable if you're sure the rasterizer depth is a good proxy.
+    """
 
-    depth_hint_rel_tol: float = 0.15
-    """Relative tolerance around depth_hint: keep z in [d*(1-tol), d*(1+tol)]."""
+    depth_hint_rel_tol: float = 0.5
+    """Relative tolerance around depth_hint: keep if |z - hint| < hint * tol."""
 
-    depth_hint_abs_tol: float = 0.05
+    depth_hint_abs_tol: float = 1.0
     """Absolute tolerance in scene units added to the depth hint window."""
+
+    no_hit_value: float = 0.0
+    """Value to use for rays that don't hit any ellipsoid.
+    
+    Options:
+      0.0  -> black in depth visualization
+      nan  -> will show as distinct color (if colormap handles NaN)
+      -1.0 -> can be masked in post-processing
+    """
+
+    debug: bool = False
+    """If True, print debug statistics about hit rates."""
 
     eps: float = 1e-8
     """Small epsilon for numeric stability."""
@@ -111,27 +133,8 @@ def quat_xyzw_to_rotmat(quat_xyzw: torch.Tensor, eps: float = 1e-8) -> torch.Ten
     return rot
 
 
-def _get_gsplat_viewmat(camera_to_world_3x4: torch.Tensor) -> torch.Tensor:
-    """Convert Nerfstudio c2w (3x4) to gsplat view matrix (world2camera, 4x4).
-
-    This mirrors `nerfstudio.models.splatfacto.get_viewmat`.
-    """
-    R = camera_to_world_3x4[:3, :3]  # [3, 3]
-    T = camera_to_world_3x4[:3, 3:4]  # [3, 1]
-    # flip the z and y axes to align with gsplat conventions
-    R = R * torch.tensor([1, -1, -1], device=R.device, dtype=R.dtype)[None, :]
-    R_inv = R.transpose(0, 1)
-    T_inv = -R_inv @ T
-    viewmat = torch.zeros((4, 4), device=R.device, dtype=R.dtype)
-    viewmat[3, 3] = 1.0
-    viewmat[:3, :3] = R_inv
-    viewmat[:3, 3:4] = T_inv
-    return viewmat
-
-
 def _camera_world_to_camera_matrix(camera: Cameras, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     """Return world->camera 4x4 for a single camera (index 0) on the requested device/dtype."""
-    # `camera_to_worlds` is [1, 3, 4] for single camera.
     c2w_3x4 = camera.camera_to_worlds[0].to(device=device, dtype=dtype)
     bottom = torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)[None, :]
     c2w = torch.cat([c2w_3x4, bottom], dim=0)  # [4, 4]
@@ -143,12 +146,21 @@ def _make_tile_table_from_gsplat_meta(
     meta: Dict[str, Any],
     num_gaussians: int,
     max_per_tile: int,
-) -> Tuple[torch.Tensor, int, int, int]:
-    """Build per-tile candidate lists using gsplat rasterization meta (no extra gsplat calls)."""
+) -> Tuple[torch.Tensor, int, int, int, Dict[str, Any]]:
+    """Build per-tile candidate lists using gsplat rasterization meta (no extra gsplat calls).
+    
+    Returns:
+        tile_table: [num_tiles, max_per_tile] tensor of Gaussian indices (-1 = invalid)
+        tile_width: number of tiles horizontally
+        tile_height: number of tiles vertically
+        tile_size: pixel size of each tile
+        stats: debug statistics dict
+    """
     required_keys = ["tile_width", "tile_height", "tile_size", "flatten_ids", "isect_offsets"]
     missing = [k for k in required_keys if k not in meta]
     if missing:
         raise KeyError(f"gsplat_meta missing required keys: {missing}. Available keys: {list(meta.keys())}")
+    
     tile_width = int(meta["tile_width"])
     tile_height = int(meta["tile_height"])
     tile_size = int(meta["tile_size"])
@@ -169,9 +181,15 @@ def _make_tile_table_from_gsplat_meta(
     ends_flat[:-1] = offsets_flat[1:]
     ends_flat[-1] = n_isects
 
+    # gsplat's flatten_ids contains Gaussian indices (may need modulo for packed formats)
     gaussian_ids_sorted = (flatten_ids.to(torch.long) % num_gaussians).contiguous()
 
     tile_table = torch.full((num_tiles, max_per_tile), -1, device=device, dtype=torch.long)
+    
+    total_candidates = 0
+    non_empty_tiles = 0
+    max_per_tile_actual = 0
+    
     for t in range(num_tiles):
         lo = int(offsets_flat[t].item())
         hi = int(ends_flat[t].item())
@@ -180,9 +198,21 @@ def _make_tile_table_from_gsplat_meta(
         ids = gaussian_ids_sorted[lo:hi]
         if ids.numel() == 0:
             continue
-        tile_table[t, : min(max_per_tile, ids.numel())] = ids[:max_per_tile]
+        non_empty_tiles += 1
+        count = min(max_per_tile, ids.numel())
+        tile_table[t, :count] = ids[:count]
+        total_candidates += count
+        max_per_tile_actual = max(max_per_tile_actual, ids.numel())
 
-    return tile_table, tile_width, tile_height, tile_size
+    stats = {
+        "num_tiles": num_tiles,
+        "non_empty_tiles": non_empty_tiles,
+        "total_candidates": total_candidates,
+        "max_per_tile_actual": max_per_tile_actual,
+        "avg_per_non_empty_tile": total_candidates / max(1, non_empty_tiles),
+    }
+
+    return tile_table, tile_width, tile_height, tile_size, stats
 
 
 def _gather_neighbor_tiles(
@@ -227,11 +257,15 @@ def _ray_ellipsoid_first_hit(
     k: float,
     eps: float,
     depth_hint: Optional[torch.Tensor] = None,
-    cand_z_cam: Optional[torch.Tensor] = None,
-    depth_hint_rel_tol: float = 0.15,
-    depth_hint_abs_tol: float = 0.05,
-) -> torch.Tensor:
-    """Compute per-ray first positive intersection with candidate ellipsoids."""
+    depth_hint_rel_tol: float = 0.5,
+    depth_hint_abs_tol: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute per-ray first positive intersection with candidate ellipsoids.
+    
+    Returns:
+        tmin: [R] ray parameter of first hit (inf if no hit)
+        hit_mask: [R] bool tensor indicating valid hits
+    """
     device = origins.device
     R = origins.shape[0]
 
@@ -251,37 +285,37 @@ def _ray_ellipsoid_first_hit(
     p_local = torch.einsum("rcij,rcj->rci", Rt, p)
     d_local = torch.einsum("rcij,rcj->rci", Rt, d.expand_as(p))
 
+    # Quadratic coefficients: a*t^2 + b*t + c = 0
+    # where the ellipsoid equation is sum_i (x_i / s_i)^2 = k
     a = (d_local * d_local * inv_s2).sum(dim=-1)  # [R, C]
     b = 2.0 * (p_local * d_local * inv_s2).sum(dim=-1)  # [R, C]
     c = (p_local * p_local * inv_s2).sum(dim=-1) - k  # [R, C]
 
     disc = b * b - 4.0 * a * c
-    ok = valid_cand & (a > eps) & (disc > 0)
-
-    # Optional hint-based filtering in camera depth (heuristic)
-    if depth_hint is not None and cand_z_cam is not None:
-        d0 = depth_hint[:, None]
-        lo = d0 * (1.0 - depth_hint_rel_tol) - depth_hint_abs_tol
-        hi = d0 * (1.0 + depth_hint_rel_tol) + depth_hint_abs_tol
-        ok = ok & (cand_z_cam >= lo) & (cand_z_cam <= hi)
+    ok = valid_cand & (a > eps) & (disc >= 0)
 
     sqrt_disc = torch.sqrt(torch.clamp(disc, min=0.0))
-    t1 = (-b - sqrt_disc) / (2.0 * a)
-    t2 = (-b + sqrt_disc) / (2.0 * a)
+    t1 = (-b - sqrt_disc) / (2.0 * a.clamp_min(eps))
+    t2 = (-b + sqrt_disc) / (2.0 * a.clamp_min(eps))
 
     # Prefer the smaller positive root; if it's not positive, try the other.
     t = torch.where(t1 > eps, t1, t2)
     t = torch.where((t > eps) & ok, t, torch.full_like(t, torch.inf))
 
+    # Optional: filter by depth hint (comparing t-values, NOT z_cam)
+    if depth_hint is not None:
+        d0 = depth_hint[:, None]  # [R, 1]
+        lo = d0 * (1.0 - depth_hint_rel_tol) - depth_hint_abs_tol
+        hi = d0 * (1.0 + depth_hint_rel_tol) + depth_hint_abs_tol
+        # Only keep hits where t is within the hint range
+        hint_ok = (t >= lo) & (t <= hi)
+        t = torch.where(hint_ok, t, torch.full_like(t, torch.inf))
+
     # Reduce over candidates
     tmin = t.min(dim=1).values  # [R]
-    # Replace inf with max finite for viewer friendliness.
-    if torch.isfinite(tmin).any():
-        max_finite = torch.max(tmin[torch.isfinite(tmin)])
-        tmin = torch.where(torch.isfinite(tmin), tmin, max_finite)
-    else:
-        tmin = torch.zeros((R,), device=device, dtype=origins.dtype)
-    return tmin
+    hit_mask = torch.isfinite(tmin)
+    
+    return tmin, hit_mask
 
 
 @torch.no_grad()
@@ -305,6 +339,7 @@ def compute_ellipsoid_depth(
         depth_hint: optional [H, W, 1] depth hint used to filter candidates.
         alpha_mask: optional [H, W, 1] mask; if provided, only pixels with alpha>0 are computed.
         config: EllipsoidDepthConfig.
+        gsplat_meta: meta dict from gsplat rasterization (required).
 
     Returns:
         depth: [H, W, 1]
@@ -342,17 +377,11 @@ def compute_ellipsoid_depth(
     if gsplat_meta is None:
         raise RuntimeError("gsplat_meta is required (pass the meta dict from gsplat rasterization).")
 
-    tile_table, tile_width, tile_height, tile_size = _make_tile_table_from_gsplat_meta(
+    tile_table, tile_width, tile_height, tile_size, tile_stats = _make_tile_table_from_gsplat_meta(
         meta=gsplat_meta,
         num_gaussians=int(means.shape[0]),
         max_per_tile=config.max_gaussians_per_tile,
     )
-
-    # Per-gaussian camera z-depth for optional hint pruning (cheap transform).
-    w2c = _camera_world_to_camera_matrix(camera, device=device, dtype=dtype)
-    xyz_h = torch.cat([means, torch.ones_like(means[..., :1])], dim=-1)  # [N,4]
-    xyz_cam_h = (xyz_h @ w2c.T)
-    z_cam = xyz_cam_h[:, 2].contiguous()
 
     # Per-pixel tile ids (computed from pixel coordinates).
     px = torch.arange(W, device=origins.device, dtype=torch.long)
@@ -367,12 +396,19 @@ def compute_ellipsoid_depth(
     if active_idx.numel() == 0:
         return torch.zeros((H, W, 1), device=origins.device, dtype=origins.dtype)
 
-    # Scatter back into full image. We fill in chunks to keep peak memory bounded.
-    depth_flat = torch.zeros((H * W,), device=origins.device, dtype=origins.dtype)
+    # Initialize output with no_hit_value
+    depth_flat = torch.full((H * W,), config.no_hit_value, device=origins.device, dtype=origins.dtype)
+    hit_mask_flat = torch.zeros((H * W,), device=origins.device, dtype=torch.bool)
+
+    # Debug counters
+    total_hits = 0
+    total_rays = 0
+    total_candidates_checked = 0
 
     chunk = max(int(config.ray_chunk_size), 1)
     for start in range(0, active_idx.numel(), chunk):
         sel = active_idx[start : start + chunk]
+        total_rays += sel.numel()
 
         cand_idx = _gather_neighbor_tiles(
             tile_table=tile_table,
@@ -383,15 +419,10 @@ def compute_ellipsoid_depth(
             neighbor_radius=config.tile_neighbor_radius,
         )  # [R_chunk, C]
 
-        # Gather candidate camera depths for hint filtering (chunked).
-        cand_z = None
-        if depth_hint_flat is not None:
-            valid_cand = cand_idx >= 0
-            safe_idx = torch.where(valid_cand, cand_idx, torch.zeros_like(cand_idx))
-            cand_z = z_cam[safe_idx]
-            cand_z = torch.where(valid_cand, cand_z, torch.full_like(cand_z, -torch.inf))
+        # Count valid candidates
+        total_candidates_checked += (cand_idx >= 0).sum().item()
 
-        t_chunk = _ray_ellipsoid_first_hit(
+        t_chunk, hit_chunk = _ray_ellipsoid_first_hit(
             origins=origins[sel],
             directions=directions[sel],
             cand_idx=cand_idx,
@@ -401,14 +432,28 @@ def compute_ellipsoid_depth(
             k=config.k,
             eps=config.eps,
             depth_hint=depth_hint_flat[sel] if depth_hint_flat is not None else None,
-            cand_z_cam=cand_z,
             depth_hint_rel_tol=config.depth_hint_rel_tol,
             depth_hint_abs_tol=config.depth_hint_abs_tol,
         )
 
-        depth_flat[sel] = t_chunk
+        # Only write valid hits
+        depth_flat[sel] = torch.where(hit_chunk, t_chunk, torch.full_like(t_chunk, config.no_hit_value))
+        hit_mask_flat[sel] = hit_chunk
+        total_hits += hit_chunk.sum().item()
+
+    # Debug output
+    if config.debug:
+        hit_rate = 100.0 * total_hits / max(1, total_rays)
+        avg_cands = total_candidates_checked / max(1, total_rays)
+        CONSOLE.log(
+            f"[cyan]Ellipsoid depth stats:[/cyan] "
+            f"k={config.k:.1f}, "
+            f"hit_rate={hit_rate:.1f}%, "
+            f"rays={total_rays}, "
+            f"avg_candidates/ray={avg_cands:.1f}, "
+            f"tiles: {tile_stats['non_empty_tiles']}/{tile_stats['num_tiles']} non-empty, "
+            f"max_per_tile={tile_stats['max_per_tile_actual']}"
+        )
 
     depth = depth_flat.view(H, W, 1)
     return depth
-
-

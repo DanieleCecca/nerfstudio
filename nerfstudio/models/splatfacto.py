@@ -147,20 +147,32 @@ class SplatfactoModelConfig(ModelConfig):
     - "both": output `depth` from rasterizer and also output `depth_ellipsoid`
     """
 
-    ellipsoid_depth_k: float = 2.0
-    """Confidence parameter k for the ellipsoid surface: (x-mu)^T Sigma^{-1} (x-mu) = k."""
+    ellipsoid_depth_k: float = 9.0
+    """Confidence parameter k for the ellipsoid surface: (x-mu)^T Sigma^{-1} (x-mu) = k.
+    
+    Interpretation for a 3D Gaussian:
+      k=1  -> ~1σ (thin, may miss)
+      k=4  -> ~2σ (reasonable)
+      k=9  -> ~3σ (recommended - covers 99% of Gaussian volume)
+      k=16 -> ~4σ (very thick ellipsoids)
+    """
     ellipsoid_depth_tile_size: int = 16
     """Tile size (pixels) for candidate selection used by ellipsoid depth."""
     ellipsoid_depth_tile_neighbor_radius: int = 1
     """Neighbor tile radius (1 => 3x3 neighborhood) for ellipsoid depth candidate selection."""
-    ellipsoid_depth_max_gaussians_per_tile: int = 128
+    ellipsoid_depth_max_gaussians_per_tile: int = 256
     """Max Gaussians stored per tile for ellipsoid depth candidate selection."""
-    ellipsoid_depth_use_depth_hint: bool = True
-    """Use rasterizer depth as a per-pixel hint to prune ellipsoid intersection candidates."""
-    ellipsoid_depth_hint_rel_tol: float = 0.15
-    """Relative tolerance for depth hint pruning."""
-    ellipsoid_depth_hint_abs_tol: float = 0.05
-    """Absolute tolerance for depth hint pruning."""
+    ellipsoid_depth_use_depth_hint: bool = False
+    """Use rasterizer depth as a per-pixel hint to prune ellipsoid intersection candidates.
+    
+    WARNING: Can be overly aggressive and reject valid intersections. Disabled by default.
+    """
+    ellipsoid_depth_hint_rel_tol: float = 0.5
+    """Relative tolerance for depth hint pruning (only used if use_depth_hint=True)."""
+    ellipsoid_depth_hint_abs_tol: float = 1.0
+    """Absolute tolerance for depth hint pruning (only used if use_depth_hint=True)."""
+    ellipsoid_depth_debug: bool = True
+    """Print debug statistics for ellipsoid depth (hit rate, candidates per ray, etc.)."""
 
     da3_depth_enabled: bool = False
     """If True, compute Depth Anything 3 metric depth from the rendered RGB and output it as `depth_da3` (eval only)."""
@@ -648,6 +660,7 @@ class SplatfactoModel(Model):
                     use_depth_hint=self.config.ellipsoid_depth_use_depth_hint,
                     depth_hint_rel_tol=self.config.ellipsoid_depth_hint_rel_tol,
                     depth_hint_abs_tol=self.config.ellipsoid_depth_hint_abs_tol,
+                    debug=self.config.ellipsoid_depth_debug,
                 )
                 depth_ellipsoid = compute_ellipsoid_depth(
                     camera=render_camera,
