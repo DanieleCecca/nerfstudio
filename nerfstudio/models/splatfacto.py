@@ -147,6 +147,12 @@ class SplatfactoModelConfig(ModelConfig):
     - "both": output `depth` from rasterizer and also output `depth_ellipsoid`
     """
 
+    ellipsoid_depth_method: Literal["tile", "bruteforce"] = "tile"
+    """Candidate selection method for ellipsoid depth:
+    
+    - "tile": Use gsplat's tile binning for fast candidate selection (recommended).
+    - "bruteforce": Test ALL Gaussians for each ray. Slow but exact (O(R*N)).
+    """
     ellipsoid_depth_k: float = 9.0
     """Confidence parameter k for the ellipsoid surface: (x-mu)^T Sigma^{-1} (x-mu) = k.
     
@@ -157,11 +163,13 @@ class SplatfactoModelConfig(ModelConfig):
       k=16 -> ~4σ (very thick ellipsoids)
     """
     ellipsoid_depth_tile_size: int = 16
-    """Tile size (pixels) for candidate selection used by ellipsoid depth."""
+    """Tile size (pixels) for candidate selection (only used if method="tile")."""
     ellipsoid_depth_tile_neighbor_radius: int = 1
-    """Neighbor tile radius (1 => 3x3 neighborhood) for ellipsoid depth candidate selection."""
+    """Neighbor tile radius (only used if method="tile")."""
     ellipsoid_depth_max_gaussians_per_tile: int = 256
-    """Max Gaussians stored per tile for ellipsoid depth candidate selection."""
+    """Max Gaussians stored per tile (only used if method="tile")."""
+    ellipsoid_depth_gauss_chunk_size: int = 4096
+    """Gaussians per chunk in bruteforce mode (only used if method="bruteforce")."""
     ellipsoid_depth_debug: bool = True
     """Print debug statistics for ellipsoid depth (hit rate, candidates per ray, etc.)."""
 
@@ -643,11 +651,13 @@ class SplatfactoModel(Model):
                 from nerfstudio.models.ellipsoid_depth import EllipsoidDepthConfig, compute_ellipsoid_depth
 
                 depth_cfg = EllipsoidDepthConfig(
+                    method=self.config.ellipsoid_depth_method,
                     k=self.config.ellipsoid_depth_k,
                     tile_size=self.config.ellipsoid_depth_tile_size,
                     tile_neighbor_radius=self.config.ellipsoid_depth_tile_neighbor_radius,
                     max_gaussians_per_tile=self.config.ellipsoid_depth_max_gaussians_per_tile,
                     ray_chunk_size=8192,
+                    gauss_chunk_size=self.config.ellipsoid_depth_gauss_chunk_size,
                     debug=self.config.ellipsoid_depth_debug,
                 )
                 depth_ellipsoid = compute_ellipsoid_depth(
@@ -657,7 +667,7 @@ class SplatfactoModel(Model):
                     quats=quats_crop,
                     alpha_mask=alpha.squeeze(0),
                     config=depth_cfg,
-                    gsplat_meta=self.info,
+                    gsplat_meta=self.info if self.config.ellipsoid_depth_method == "tile" else None,
                 )
             except Exception as e:
                 CONSOLE.log(f"[yellow]Ellipsoid depth failed, falling back to rasterizer depth: {e}[/yellow]")

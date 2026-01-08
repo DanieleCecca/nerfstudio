@@ -24,7 +24,7 @@ Notes
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import torch
 from nerfstudio.cameras.cameras import Cameras
@@ -34,6 +34,15 @@ from nerfstudio.utils.rich_utils import CONSOLE
 @dataclass
 class EllipsoidDepthConfig:
     """Config for ellipsoid depth estimation."""
+
+    method: Literal["tile", "bruteforce"] = "tile"
+    """Candidate selection method:
+    
+    - "tile": Use gsplat's tile binning for fast candidate selection (O(R*C) where C << N).
+              Requires gsplat_meta from rasterization.
+    - "bruteforce": Test ALL Gaussians for each ray (O(R*N)). Slow but exact.
+                    Does not require gsplat_meta.
+    """
 
     k: float = 9.0
     """Confidence parameter in (x-mu)^T Sigma^{-1} (x-mu) = k.
@@ -48,16 +57,19 @@ class EllipsoidDepthConfig:
     """
 
     tile_size: int = 16
-    """Tile size (pixels) used for screen-space binning."""
+    """Tile size (pixels) used for screen-space binning (only used if method="tile")."""
 
     tile_neighbor_radius: int = 1
-    """How many neighboring tiles to include (1 => 3x3 neighborhood)."""
+    """How many neighboring tiles to include (only used if method="tile")."""
 
     max_gaussians_per_tile: int = 256
-    """Cap on Gaussians stored per tile (largest-z pruning happens implicitly)."""
+    """Cap on Gaussians stored per tile (only used if method="tile")."""
 
     ray_chunk_size: int = 8192
     """Number of rays processed per chunk to bound peak GPU memory."""
+
+    gauss_chunk_size: int = 4096
+    """Number of Gaussians processed per chunk in bruteforce mode to bound peak GPU memory."""
 
     no_hit_value: float = 0.0
     """Value to use for rays that don't hit any ellipsoid.
@@ -221,7 +233,7 @@ def _ray_ellipsoid_first_hit(
     k: float,
     eps: float,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute per-ray first positive intersection with candidate ellipsoids.
+    """Compute per-ray first positive intersection with candidate ellipsoids (tile mode).
     
     The ellipsoid is defined as (x - μ)^T P (x - μ) = k, where P = Σ⁻¹ is the precision matrix.
     
@@ -269,6 +281,74 @@ def _ray_ellipsoid_first_hit(
     return tmin, hit_mask
 
 
+def _ray_ellipsoid_first_hit_bruteforce(
+    origins: torch.Tensor,
+    directions: torch.Tensor,
+    means: torch.Tensor,
+    precis: torch.Tensor,
+    k: float,
+    eps: float,
+    gauss_chunk_size: int = 4096,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute per-ray first positive intersection with ALL ellipsoids (bruteforce).
+    
+    The ellipsoid is defined as (x - μ)^T P (x - μ) = k, where P = Σ⁻¹ is the precision matrix.
+    
+    This tests every ray against every Gaussian (O(R*N)), but processes Gaussians in chunks
+    to avoid OOM.
+    
+    Returns:
+        tmin: [R] ray parameter of first hit (inf if no hit)
+        hit_mask: [R] bool tensor indicating valid hits
+    """
+    device = origins.device
+    R = origins.shape[0]
+    N = means.shape[0]
+
+    # Initialize with inf (no hit)
+    tmin = torch.full((R,), torch.inf, device=device, dtype=origins.dtype)
+
+    # Process Gaussians in chunks to bound memory
+    for g_start in range(0, N, gauss_chunk_size):
+        g_end = min(g_start + gauss_chunk_size, N)
+        
+        mu = means[g_start:g_end]  # [G, 3]
+        P = precis[g_start:g_end]  # [G, 3, 3]
+        G = mu.shape[0]
+
+        # Expand for broadcasting: [R, G, 3]
+        o = origins[:, None, :]  # [R, 1, 3]
+        d = directions[:, None, :]  # [R, 1, 3]
+        mu_exp = mu[None, :, :]  # [1, G, 3]
+        P_exp = P[None, :, :, :]  # [1, G, 3, 3]
+
+        p = o - mu_exp  # [R, G, 3]
+        dd = d.expand(R, G, 3)  # [R, G, 3]
+
+        # Quadratic coefficients
+        a = torch.einsum("rgi,rgij,rgj->rg", dd, P_exp.expand(R, G, 3, 3), dd)  # [R, G]
+        b = 2.0 * torch.einsum("rgi,rgij,rgj->rg", p, P_exp.expand(R, G, 3, 3), dd)  # [R, G]
+        c = torch.einsum("rgi,rgij,rgj->rg", p, P_exp.expand(R, G, 3, 3), p) - k  # [R, G]
+
+        disc = b * b - 4.0 * a * c
+        ok = (a > eps) & (disc >= 0)
+
+        sqrt_disc = torch.sqrt(torch.clamp(disc, min=0.0))
+        t1 = (-b - sqrt_disc) / (2.0 * a.clamp_min(eps))
+        t2 = (-b + sqrt_disc) / (2.0 * a.clamp_min(eps))
+
+        # Prefer the smaller positive root
+        t = torch.where(t1 > eps, t1, t2)
+        t = torch.where((t > eps) & ok, t, torch.full_like(t, torch.inf))
+
+        # Reduce over this chunk of Gaussians and update global min
+        t_chunk_min = t.min(dim=1).values  # [R]
+        tmin = torch.minimum(tmin, t_chunk_min)
+
+    hit_mask = torch.isfinite(tmin)
+    return tmin, hit_mask
+
+
 @torch.no_grad()
 def compute_ellipsoid_depth(
     camera: Cameras,
@@ -288,7 +368,7 @@ def compute_ellipsoid_depth(
         quats: [N, 4] gaussian quaternions (xyzw).
         alpha_mask: optional [H, W, 1] mask; if provided, only pixels with alpha>0 are computed.
         config: EllipsoidDepthConfig.
-        gsplat_meta: meta dict from gsplat rasterization (required).
+        gsplat_meta: meta dict from gsplat rasterization (required for method="tile").
 
     Returns:
         depth: [H, W, 1]
@@ -301,6 +381,7 @@ def compute_ellipsoid_depth(
     dtype = means.dtype
     H = int(camera.height.item())
     W = int(camera.width.item())
+    N = means.shape[0]
 
     # Generate rays for full image (keep_shape => [H, W, 3]).
     rays = camera.generate_rays(camera_indices=0, keep_shape=True)
@@ -318,24 +399,7 @@ def compute_ellipsoid_depth(
     # Compute precision matrices using gsplat's optimized function.
     precis = _get_precision_matrices(quats, scales)  # [N, 3, 3]
 
-    if gsplat_meta is None:
-        raise RuntimeError("gsplat_meta is required (pass the meta dict from gsplat rasterization).")
-
-    tile_table, tile_width, tile_height, tile_size, tile_stats = _make_tile_table_from_gsplat_meta(
-        meta=gsplat_meta,
-        num_gaussians=int(means.shape[0]),
-        max_per_tile=config.max_gaussians_per_tile,
-    )
-
-    # Per-pixel tile ids (computed from pixel coordinates).
-    px = torch.arange(W, device=origins.device, dtype=torch.long)
-    py = torch.arange(H, device=origins.device, dtype=torch.long)
-    grid_y, grid_x = torch.meshgrid(py, px, indexing="ij")
-    pix_tile_x = (grid_x.reshape(-1) // tile_size).clamp(0, tile_width - 1)
-    pix_tile_y = (grid_y.reshape(-1) // tile_size).clamp(0, tile_height - 1)
-    pix_tile_id = pix_tile_y * tile_width + pix_tile_x  # [R]
-
-    # Gather candidates for active rays only (huge speed win in sparse regions).
+    # Gather candidates for active rays only.
     active_idx = torch.nonzero(active, as_tuple=False).squeeze(-1)
     if active_idx.numel() == 0:
         return torch.zeros((H, W, 1), device=origins.device, dtype=origins.dtype)
@@ -348,52 +412,103 @@ def compute_ellipsoid_depth(
     total_hits = 0
     total_rays = 0
     total_candidates_checked = 0
+    tile_stats = None
 
-    chunk = max(int(config.ray_chunk_size), 1)
-    for start in range(0, active_idx.numel(), chunk):
-        sel = active_idx[start : start + chunk]
-        total_rays += sel.numel()
+    if config.method == "bruteforce":
+        # ========== BRUTEFORCE: test all N Gaussians for each ray ==========
+        chunk = max(int(config.ray_chunk_size), 1)
+        for start in range(0, active_idx.numel(), chunk):
+            sel = active_idx[start : start + chunk]
+            total_rays += sel.numel()
+            total_candidates_checked += sel.numel() * N
 
-        cand_idx = _gather_neighbor_tiles(
-            tile_table=tile_table,
-            pixel_tile_id=pix_tile_id[sel],
-            width=W,
-            height=H,
-            tile_size=tile_size,
-            neighbor_radius=config.tile_neighbor_radius,
-        )  # [R_chunk, C]
+            t_chunk, hit_chunk = _ray_ellipsoid_first_hit_bruteforce(
+                origins=origins[sel],
+                directions=directions[sel],
+                means=means,
+                precis=precis,
+                k=config.k,
+                eps=config.eps,
+                gauss_chunk_size=config.gauss_chunk_size,
+            )
 
-        # Count valid candidates
-        total_candidates_checked += (cand_idx >= 0).sum().item()
+            depth_flat[sel] = torch.where(hit_chunk, t_chunk, torch.full_like(t_chunk, config.no_hit_value))
+            hit_mask_flat[sel] = hit_chunk
+            total_hits += hit_chunk.sum().item()
 
-        t_chunk, hit_chunk = _ray_ellipsoid_first_hit(
-            origins=origins[sel],
-            directions=directions[sel],
-            cand_idx=cand_idx,
-            means=means,
-            precis=precis,
-            k=config.k,
-            eps=config.eps,
+    else:
+        # ========== TILE: use gsplat's tile binning for candidate selection ==========
+        if gsplat_meta is None:
+            raise RuntimeError("gsplat_meta is required for method='tile' (pass the meta dict from gsplat rasterization).")
+
+        tile_table, tile_width, tile_height, tile_size, tile_stats = _make_tile_table_from_gsplat_meta(
+            meta=gsplat_meta,
+            num_gaussians=N,
+            max_per_tile=config.max_gaussians_per_tile,
         )
 
-        # Only write valid hits
-        depth_flat[sel] = torch.where(hit_chunk, t_chunk, torch.full_like(t_chunk, config.no_hit_value))
-        hit_mask_flat[sel] = hit_chunk
-        total_hits += hit_chunk.sum().item()
+        # Per-pixel tile ids (computed from pixel coordinates).
+        px = torch.arange(W, device=origins.device, dtype=torch.long)
+        py = torch.arange(H, device=origins.device, dtype=torch.long)
+        grid_y, grid_x = torch.meshgrid(py, px, indexing="ij")
+        pix_tile_x = (grid_x.reshape(-1) // tile_size).clamp(0, tile_width - 1)
+        pix_tile_y = (grid_y.reshape(-1) // tile_size).clamp(0, tile_height - 1)
+        pix_tile_id = pix_tile_y * tile_width + pix_tile_x  # [R]
+
+        chunk = max(int(config.ray_chunk_size), 1)
+        for start in range(0, active_idx.numel(), chunk):
+            sel = active_idx[start : start + chunk]
+            total_rays += sel.numel()
+
+            cand_idx = _gather_neighbor_tiles(
+                tile_table=tile_table,
+                pixel_tile_id=pix_tile_id[sel],
+                width=W,
+                height=H,
+                tile_size=tile_size,
+                neighbor_radius=config.tile_neighbor_radius,
+            )  # [R_chunk, C]
+
+            # Count valid candidates
+            total_candidates_checked += (cand_idx >= 0).sum().item()
+
+            t_chunk, hit_chunk = _ray_ellipsoid_first_hit(
+                origins=origins[sel],
+                directions=directions[sel],
+                cand_idx=cand_idx,
+                means=means,
+                precis=precis,
+                k=config.k,
+                eps=config.eps,
+            )
+
+            depth_flat[sel] = torch.where(hit_chunk, t_chunk, torch.full_like(t_chunk, config.no_hit_value))
+            hit_mask_flat[sel] = hit_chunk
+            total_hits += hit_chunk.sum().item()
 
     # Debug output
     if config.debug:
         hit_rate = 100.0 * total_hits / max(1, total_rays)
         avg_cands = total_candidates_checked / max(1, total_rays)
-        CONSOLE.log(
-            f"[cyan]Ellipsoid depth stats:[/cyan] "
-            f"k={config.k:.1f}, "
-            f"hit_rate={hit_rate:.1f}%, "
-            f"rays={total_rays}, "
-            f"avg_candidates/ray={avg_cands:.1f}, "
-            f"tiles: {tile_stats['non_empty_tiles']}/{tile_stats['num_tiles']} non-empty, "
-            f"max_per_tile={tile_stats['max_per_tile_actual']}"
-        )
+        if config.method == "bruteforce":
+            CONSOLE.log(
+                f"[cyan]Ellipsoid depth stats (bruteforce):[/cyan] "
+                f"k={config.k:.1f}, "
+                f"hit_rate={hit_rate:.1f}%, "
+                f"rays={total_rays}, "
+                f"gaussians={N}, "
+                f"total_intersections={total_candidates_checked}"
+            )
+        elif tile_stats is not None:
+            CONSOLE.log(
+                f"[cyan]Ellipsoid depth stats (tile):[/cyan] "
+                f"k={config.k:.1f}, "
+                f"hit_rate={hit_rate:.1f}%, "
+                f"rays={total_rays}, "
+                f"avg_candidates/ray={avg_cands:.1f}, "
+                f"tiles: {tile_stats['non_empty_tiles']}/{tile_stats['num_tiles']} non-empty, "
+                f"max_per_tile={tile_stats['max_per_tile_actual']}"
+            )
 
     depth = depth_flat.view(H, W, 1)
     return depth
