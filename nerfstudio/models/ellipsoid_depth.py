@@ -59,19 +59,6 @@ class EllipsoidDepthConfig:
     ray_chunk_size: int = 8192
     """Number of rays processed per chunk to bound peak GPU memory."""
 
-    use_depth_hint: bool = False
-    """If True, filter candidates by proximity to a per-pixel depth hint.
-    
-    WARNING: This can be overly aggressive and reject valid intersections.
-    Only enable if you're sure the rasterizer depth is a good proxy.
-    """
-
-    depth_hint_rel_tol: float = 0.5
-    """Relative tolerance around depth_hint: keep if |z - hint| < hint * tol."""
-
-    depth_hint_abs_tol: float = 1.0
-    """Absolute tolerance in scene units added to the depth hint window."""
-
     no_hit_value: float = 0.0
     """Value to use for rays that don't hit any ellipsoid.
     
@@ -88,58 +75,36 @@ class EllipsoidDepthConfig:
     """Small epsilon for numeric stability."""
 
 
-def quat_xyzw_to_rotmat(quat_xyzw: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """Convert xyzw quaternion(s) to rotation matrix.
+def _xyzw_to_wxyz(quats_xyzw: torch.Tensor) -> torch.Tensor:
+    """Convert quaternions from xyzw (Nerfstudio) to wxyz (gsplat) order."""
+    return torch.stack([quats_xyzw[..., 3], quats_xyzw[..., 0], quats_xyzw[..., 1], quats_xyzw[..., 2]], dim=-1)
 
+
+def _get_precision_matrices(quats_xyzw: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
+    """Compute precision matrices (Σ⁻¹) using gsplat's quat_scale_to_covar_preci.
+    
     Args:
-        quat_xyzw: [..., 4] quaternion in xyzw order.
-        eps: numeric epsilon used for safe normalization.
-
+        quats_xyzw: [N, 4] quaternions in xyzw order (Nerfstudio convention).
+        scales: [N, 3] scales (linear, not log).
+    
     Returns:
-        rot: [..., 3, 3]
+        precis: [N, 3, 3] precision matrices.
     """
-    q = quat_xyzw
-    q = q / (torch.linalg.norm(q, dim=-1, keepdim=True).clamp_min(eps))
-    x, y, z, w = q.unbind(dim=-1)
-
-    xx = x * x
-    yy = y * y
-    zz = z * z
-    xy = x * y
-    xz = x * z
-    yz = y * z
-    wx = w * x
-    wy = w * y
-    wz = w * z
-
-    m00 = 1.0 - 2.0 * (yy + zz)
-    m01 = 2.0 * (xy - wz)
-    m02 = 2.0 * (xz + wy)
-    m10 = 2.0 * (xy + wz)
-    m11 = 1.0 - 2.0 * (xx + zz)
-    m12 = 2.0 * (yz - wx)
-    m20 = 2.0 * (xz - wy)
-    m21 = 2.0 * (yz + wx)
-    m22 = 1.0 - 2.0 * (xx + yy)
-
-    rot = torch.stack(
-        [
-            torch.stack([m00, m01, m02], dim=-1),
-            torch.stack([m10, m11, m12], dim=-1),
-            torch.stack([m20, m21, m22], dim=-1),
-        ],
-        dim=-2,
+    from gsplat import quat_scale_to_covar_preci
+    
+    # gsplat expects wxyz order
+    quats_wxyz = _xyzw_to_wxyz(quats_xyzw)
+    
+    _, precis = quat_scale_to_covar_preci(
+        quats_wxyz,
+        scales,
+        compute_covar=False,
+        compute_preci=True,
+        triu=False,
     )
-    return rot
+    assert precis is not None
+    return precis  # [N, 3, 3]
 
-
-def _camera_world_to_camera_matrix(camera: Cameras, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    """Return world->camera 4x4 for a single camera (index 0) on the requested device/dtype."""
-    c2w_3x4 = camera.camera_to_worlds[0].to(device=device, dtype=dtype)
-    bottom = torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)[None, :]
-    c2w = torch.cat([c2w_3x4, bottom], dim=0)  # [4, 4]
-    w2c = torch.inverse(c2w)
-    return w2c
 
 
 def _make_tile_table_from_gsplat_meta(
@@ -252,15 +217,13 @@ def _ray_ellipsoid_first_hit(
     directions: torch.Tensor,
     cand_idx: torch.Tensor,
     means: torch.Tensor,
-    inv_scales2: torch.Tensor,
-    rotmats: torch.Tensor,
+    precis: torch.Tensor,
     k: float,
     eps: float,
-    depth_hint: Optional[torch.Tensor] = None,
-    depth_hint_rel_tol: float = 0.5,
-    depth_hint_abs_tol: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Compute per-ray first positive intersection with candidate ellipsoids.
+    
+    The ellipsoid is defined as (x - μ)^T P (x - μ) = k, where P = Σ⁻¹ is the precision matrix.
     
     Returns:
         tmin: [R] ray parameter of first hit (inf if no hit)
@@ -274,22 +237,19 @@ def _ray_ellipsoid_first_hit(
     safe_idx = torch.where(valid_cand, cand_idx, torch.zeros_like(cand_idx))
 
     mu = means[safe_idx]  # [R, C, 3]
-    inv_s2 = inv_scales2[safe_idx]  # [R, C, 3]
-    Rt = rotmats[safe_idx].transpose(-1, -2)  # [R, C, 3, 3]
+    P = precis[safe_idx]  # [R, C, 3, 3]
 
     o = origins[:, None, :]  # [R, 1, 3]
     d = directions[:, None, :]  # [R, 1, 3]
     p = o - mu  # [R, C, 3]
+    dd = d.expand_as(p)  # [R, C, 3]
 
-    # Transform into ellipsoid local frame: p' = R^T p, d' = R^T d
-    p_local = torch.einsum("rcij,rcj->rci", Rt, p)
-    d_local = torch.einsum("rcij,rcj->rci", Rt, d.expand_as(p))
-
-    # Quadratic coefficients: a*t^2 + b*t + c = 0
-    # where the ellipsoid equation is sum_i (x_i / s_i)^2 = k
-    a = (d_local * d_local * inv_s2).sum(dim=-1)  # [R, C]
-    b = 2.0 * (p_local * d_local * inv_s2).sum(dim=-1)  # [R, C]
-    c = (p_local * p_local * inv_s2).sum(dim=-1) - k  # [R, C]
+    # Quadratic coefficients using precision matrix:
+    # For ray o + t*d intersecting ellipsoid (x-μ)^T P (x-μ) = k:
+    #   a = d^T P d,  b = 2 p^T P d,  c = p^T P p - k
+    a = torch.einsum("rci,rcij,rcj->rc", dd, P, dd)  # [R, C]
+    b = 2.0 * torch.einsum("rci,rcij,rcj->rc", p, P, dd)  # [R, C]
+    c = torch.einsum("rci,rcij,rcj->rc", p, P, p) - k  # [R, C]
 
     disc = b * b - 4.0 * a * c
     ok = valid_cand & (a > eps) & (disc >= 0)
@@ -301,15 +261,6 @@ def _ray_ellipsoid_first_hit(
     # Prefer the smaller positive root; if it's not positive, try the other.
     t = torch.where(t1 > eps, t1, t2)
     t = torch.where((t > eps) & ok, t, torch.full_like(t, torch.inf))
-
-    # Optional: filter by depth hint (comparing t-values, NOT z_cam)
-    if depth_hint is not None:
-        d0 = depth_hint[:, None]  # [R, 1]
-        lo = d0 * (1.0 - depth_hint_rel_tol) - depth_hint_abs_tol
-        hi = d0 * (1.0 + depth_hint_rel_tol) + depth_hint_abs_tol
-        # Only keep hits where t is within the hint range
-        hint_ok = (t >= lo) & (t <= hi)
-        t = torch.where(hint_ok, t, torch.full_like(t, torch.inf))
 
     # Reduce over candidates
     tmin = t.min(dim=1).values  # [R]
@@ -324,7 +275,6 @@ def compute_ellipsoid_depth(
     means: torch.Tensor,
     scales: torch.Tensor,
     quats: torch.Tensor,
-    depth_hint: Optional[torch.Tensor] = None,
     alpha_mask: Optional[torch.Tensor] = None,
     config: Optional[EllipsoidDepthConfig] = None,
     gsplat_meta: Optional[Dict[str, Any]] = None,
@@ -336,7 +286,6 @@ def compute_ellipsoid_depth(
         means: [N, 3] gaussian centers in world coordinates.
         scales: [N, 3] gaussian scales (linear, not log).
         quats: [N, 4] gaussian quaternions (xyzw).
-        depth_hint: optional [H, W, 1] depth hint used to filter candidates.
         alpha_mask: optional [H, W, 1] mask; if provided, only pixels with alpha>0 are computed.
         config: EllipsoidDepthConfig.
         gsplat_meta: meta dict from gsplat rasterization (required).
@@ -359,20 +308,15 @@ def compute_ellipsoid_depth(
     directions = rays.directions.to(device=device, dtype=dtype).reshape(-1, 3)
     directions = directions / torch.linalg.norm(directions, dim=-1, keepdim=True).clamp_min(config.eps)
 
-    # Flatten optional masks / hints.
+    # Flatten optional mask.
     if alpha_mask is not None:
         alpha_flat = alpha_mask.reshape(-1)
         active = alpha_flat > 0
     else:
         active = torch.ones((H * W,), device=origins.device, dtype=torch.bool)
 
-    depth_hint_flat = None
-    if config.use_depth_hint and depth_hint is not None:
-        depth_hint_flat = depth_hint.reshape(-1).clamp_min(config.eps)
-
-    # Precompute per-gaussian rotation and inverse scale^2.
-    rotmats = quat_xyzw_to_rotmat(quats, eps=config.eps)  # [N, 3, 3]
-    inv_scales2 = 1.0 / (scales * scales).clamp_min(config.eps)  # [N, 3]
+    # Compute precision matrices using gsplat's optimized function.
+    precis = _get_precision_matrices(quats, scales)  # [N, 3, 3]
 
     if gsplat_meta is None:
         raise RuntimeError("gsplat_meta is required (pass the meta dict from gsplat rasterization).")
@@ -427,13 +371,9 @@ def compute_ellipsoid_depth(
             directions=directions[sel],
             cand_idx=cand_idx,
             means=means,
-            inv_scales2=inv_scales2,
-            rotmats=rotmats,
+            precis=precis,
             k=config.k,
             eps=config.eps,
-            depth_hint=depth_hint_flat[sel] if depth_hint_flat is not None else None,
-            depth_hint_rel_tol=config.depth_hint_rel_tol,
-            depth_hint_abs_tol=config.depth_hint_abs_tol,
         )
 
         # Only write valid hits

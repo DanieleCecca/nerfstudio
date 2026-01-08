@@ -162,15 +162,6 @@ class SplatfactoModelConfig(ModelConfig):
     """Neighbor tile radius (1 => 3x3 neighborhood) for ellipsoid depth candidate selection."""
     ellipsoid_depth_max_gaussians_per_tile: int = 256
     """Max Gaussians stored per tile for ellipsoid depth candidate selection."""
-    ellipsoid_depth_use_depth_hint: bool = False
-    """Use rasterizer depth as a per-pixel hint to prune ellipsoid intersection candidates.
-    
-    WARNING: Can be overly aggressive and reject valid intersections. Disabled by default.
-    """
-    ellipsoid_depth_hint_rel_tol: float = 0.5
-    """Relative tolerance for depth hint pruning (only used if use_depth_hint=True)."""
-    ellipsoid_depth_hint_abs_tol: float = 1.0
-    """Absolute tolerance for depth hint pruning (only used if use_depth_hint=True)."""
     ellipsoid_depth_debug: bool = True
     """Print debug statistics for ellipsoid depth (hit rate, candidates per ray, etc.)."""
 
@@ -657,9 +648,6 @@ class SplatfactoModel(Model):
                     tile_neighbor_radius=self.config.ellipsoid_depth_tile_neighbor_radius,
                     max_gaussians_per_tile=self.config.ellipsoid_depth_max_gaussians_per_tile,
                     ray_chunk_size=8192,
-                    use_depth_hint=self.config.ellipsoid_depth_use_depth_hint,
-                    depth_hint_rel_tol=self.config.ellipsoid_depth_hint_rel_tol,
-                    depth_hint_abs_tol=self.config.ellipsoid_depth_hint_abs_tol,
                     debug=self.config.ellipsoid_depth_debug,
                 )
                 depth_ellipsoid = compute_ellipsoid_depth(
@@ -667,7 +655,6 @@ class SplatfactoModel(Model):
                     means=means_crop,
                     scales=torch.exp(scales_crop),
                     quats=quats_crop,
-                    depth_hint=depth_im if depth_im is not None else None,
                     alpha_mask=alpha.squeeze(0),
                     config=depth_cfg,
                     gsplat_meta=self.info,
