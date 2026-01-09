@@ -62,6 +62,16 @@ class EllipsoidDepthConfig:
     max_gaussians_per_tile: int = 256
     """Cap on Gaussians stored per tile (only used if method="tile")."""
 
+    screen_filter: bool = True
+    """If True (recommended), filter per-tile candidates per-pixel using gsplat's projected
+    screen-space Gaussian footprint (means2d/conics/opacities) before doing ray–ellipsoid
+    intersection. This avoids tile-wise artifacts where a Gaussian overlaps the tile but not
+    the specific pixel."""
+
+    screen_alpha_threshold: float = 1.0 / 255.0
+    """Alpha threshold used by gsplat rasterizer (ALPHA_THRESHOLD). Candidates with
+    opac*exp(-sigma) below this are ignored for that pixel."""
+
     ray_chunk_size: int = 8192
     """Number of rays processed per chunk to bound peak GPU memory."""
 
@@ -213,6 +223,59 @@ def _make_tile_table_from_gsplat_meta(
     return tile_table, tile_width, tile_height, tile_size, stats
 
 
+def _squeeze_meta_first(x: torch.Tensor, min_dim: int) -> torch.Tensor:
+    """Repeatedly take the first element of leading batch/camera dims until `x.dim() == min_dim`."""
+    while x.dim() > min_dim:
+        x = x[0]
+    return x
+
+
+def _filter_candidates_screen_space(
+    *,
+    sel: torch.Tensor,
+    cand_idx: torch.Tensor,
+    W: int,
+    gsplat_meta: Dict[str, Any],
+    alpha_threshold: float,
+) -> torch.Tensor:
+    """Per-pixel filter for tile candidates, matching gsplat's rasterizer footprint check."""
+    if not all(k in gsplat_meta for k in ("means2d", "conics", "opacities")):
+        return cand_idx
+
+    means2d = gsplat_meta["means2d"]
+    conics = gsplat_meta["conics"]
+    opacities = gsplat_meta["opacities"]
+
+    # Squeeze to per-gaussian arrays: means2d [N,2], conics [N,3], opacities [N]
+    means2d = _squeeze_meta_first(means2d, 2)
+    conics = _squeeze_meta_first(conics, 2)
+    opacities = _squeeze_meta_first(opacities, 1)
+
+    # Pixel coordinates for selected rays (row-major)
+    px = (sel % W).to(dtype=means2d.dtype)
+    py = (sel // W).to(dtype=means2d.dtype)
+
+    valid = cand_idx >= 0
+    safe_idx = torch.clamp(cand_idx, min=0)
+
+    m = means2d[safe_idx]  # [R, M, 2]
+    c = conics[safe_idx]  # [R, M, 3]
+    o = opacities[safe_idx]  # [R, M]
+
+    dx = m[..., 0] - px[:, None]
+    dy = m[..., 1] - py[:, None]
+    a = c[..., 0]
+    b = c[..., 1]
+    cc = c[..., 2]
+
+    sigma = 0.5 * (a * dx * dx + cc * dy * dy) + b * dx * dy
+    alpha = torch.minimum(
+        o * torch.exp(-sigma),
+        torch.tensor(0.999, device=o.device, dtype=o.dtype),
+    )
+
+    keep = valid & (sigma >= 0) & (alpha >= float(alpha_threshold))
+    return torch.where(keep, cand_idx, torch.full_like(cand_idx, -1))
 
 
 def _ray_ellipsoid_first_hit(
@@ -464,6 +527,15 @@ def compute_ellipsoid_depth(
             # Direct lookup: each ray gets candidates from its exact tile
             # gsplat already assigns Gaussians to ALL tiles they overlap, so no need for neighbors
             cand_idx = tile_table[pix_tile_id[sel]]  # [R_chunk, max_per_tile]
+
+            if config.screen_filter:
+                cand_idx = _filter_candidates_screen_space(
+                    sel=sel,
+                    cand_idx=cand_idx,
+                    W=W,
+                    gsplat_meta=gsplat_meta,
+                    alpha_threshold=config.screen_alpha_threshold,
+                )
 
             # Count valid candidates
             total_candidates_checked += (cand_idx >= 0).sum().item()
