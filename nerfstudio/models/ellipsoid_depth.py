@@ -59,9 +59,6 @@ class EllipsoidDepthConfig:
     tile_size: int = 16
     """Tile size (pixels) used for screen-space binning (only used if method="tile")."""
 
-    tile_neighbor_radius: int = 1
-    """How many neighboring tiles to include (only used if method="tile")."""
-
     max_gaussians_per_tile: int = 256
     """Cap on Gaussians stored per tile (only used if method="tile")."""
 
@@ -123,6 +120,7 @@ def _make_tile_table_from_gsplat_meta(
     meta: Dict[str, Any],
     num_gaussians: int,
     max_per_tile: int,
+    debug: bool = False,
 ) -> Tuple[torch.Tensor, int, int, int, Dict[str, Any]]:
     """Build per-tile candidate lists using gsplat rasterization meta (no extra gsplat calls).
     
@@ -143,16 +141,32 @@ def _make_tile_table_from_gsplat_meta(
     tile_size = int(meta["tile_size"])
 
     flatten_ids = meta["flatten_ids"]
-    isect_offsets = meta["isect_offsets"]
+    isect_offsets_orig = meta["isect_offsets"]
+
+    if debug:
+        CONSOLE.log(f"[magenta]gsplat_meta shapes: flatten_ids={flatten_ids.shape}, isect_offsets={isect_offsets_orig.shape}[/magenta]")
+        CONSOLE.log(f"[magenta]tile_width={tile_width}, tile_height={tile_height}, tile_size={tile_size}[/magenta]")
 
     # Use first batch/camera if present: [..., C, th, tw] -> [th, tw]
+    isect_offsets = isect_offsets_orig
     while isect_offsets.dim() > 2:
         isect_offsets = isect_offsets[0]
+
+    if debug:
+        CONSOLE.log(f"[magenta]isect_offsets after squeeze: {isect_offsets.shape}[/magenta]")
 
     device = flatten_ids.device
     num_tiles = tile_width * tile_height
 
+    # IMPORTANT: gsplat stores isect_offsets as [tile_height, tile_width] in row-major order
+    # but we need to be careful about the flattening order
     offsets_flat = isect_offsets.reshape(-1).to(torch.long)  # [num_tiles]
+    
+    if debug:
+        CONSOLE.log(f"[magenta]offsets_flat: len={len(offsets_flat)}, expected num_tiles={num_tiles}[/magenta]")
+        CONSOLE.log(f"[magenta]offsets_flat first 10: {offsets_flat[:10].tolist()}[/magenta]")
+        CONSOLE.log(f"[magenta]offsets_flat last 10: {offsets_flat[-10:].tolist()}[/magenta]")
+    
     n_isects = int(flatten_ids.shape[0])
     ends_flat = torch.empty_like(offsets_flat)
     ends_flat[:-1] = offsets_flat[1:]
@@ -160,6 +174,10 @@ def _make_tile_table_from_gsplat_meta(
 
     # gsplat's flatten_ids contains Gaussian indices (may need modulo for packed formats)
     gaussian_ids_sorted = (flatten_ids.to(torch.long) % num_gaussians).contiguous()
+
+    if debug:
+        CONSOLE.log(f"[magenta]n_isects={n_isects}, num_gaussians={num_gaussians}[/magenta]")
+        CONSOLE.log(f"[magenta]gaussian_ids range: min={gaussian_ids_sorted.min().item()}, max={gaussian_ids_sorted.max().item()}[/magenta]")
 
     tile_table = torch.full((num_tiles, max_per_tile), -1, device=device, dtype=torch.long)
     
@@ -189,44 +207,12 @@ def _make_tile_table_from_gsplat_meta(
         "avg_per_non_empty_tile": total_candidates / max(1, non_empty_tiles),
     }
 
+    if debug:
+        CONSOLE.log(f"[magenta]Tile table stats: {stats}[/magenta]")
+
     return tile_table, tile_width, tile_height, tile_size, stats
 
 
-def _gather_neighbor_tiles(
-    tile_table: torch.Tensor,
-    pixel_tile_id: torch.Tensor,
-    tile_width: int,
-    tile_height: int,
-    neighbor_radius: int,
-) -> torch.Tensor:
-    """For each pixel tile id, gather candidates from neighboring tiles.
-    
-    Args:
-        tile_table: [num_tiles, max_per_tile] tensor of Gaussian indices
-        pixel_tile_id: [R] tile id for each pixel/ray
-        tile_width: number of tiles horizontally (from gsplat_meta)
-        tile_height: number of tiles vertically (from gsplat_meta)
-        neighbor_radius: how many neighboring tiles to include
-    """
-    device = tile_table.device
-    num_tiles = tile_width * tile_height
-
-    tile_x = pixel_tile_id % tile_width
-    tile_y = pixel_tile_id // tile_width
-
-    offsets = torch.arange(-neighbor_radius, neighbor_radius + 1, device=device, dtype=torch.long)
-    oy, ox = torch.meshgrid(offsets, offsets, indexing="ij")
-    ox = ox.reshape(-1)  # [K]
-    oy = oy.reshape(-1)  # [K]
-
-    nx = (tile_x[:, None] + ox[None, :]).clamp(0, tile_width - 1)
-    ny = (tile_y[:, None] + oy[None, :]).clamp(0, tile_height - 1)
-    n_id = ny * tile_width + nx  # [R, K]
-    n_id = n_id.clamp(0, num_tiles - 1)
-
-    # Gather [R, K, max_per_tile] then flatten
-    gathered = tile_table[n_id]  # [R, K, M]
-    return gathered.reshape(gathered.shape[0], -1)  # [R, K*M]
 
 
 def _ray_ellipsoid_first_hit(
@@ -321,7 +307,7 @@ def _ray_ellipsoid_first_hit_bruteforce(
         P = precis[g_start:g_end]  # [G, 3, 3]
         G = mu.shape[0]
 
-        # Expand for broadcasting: [R, G, 3]
+        # Expand for broadcasting(replicare virtualmente): [R, G, 3]
         o = origins[:, None, :]  # [R, 1, 3]
         d = directions[:, None, :]  # [R, 1, 3]
         mu_exp = mu[None, :, :]  # [1, G, 3]
@@ -331,6 +317,7 @@ def _ray_ellipsoid_first_hit_bruteforce(
         dd = d.expand(R, G, 3)  # [R, G, 3]
 
         # Quadratic coefficients
+        #einsum esegue in parallelo le stesse moltiplicazioni vettore–matrice–vettore che faresti in un doppio loop, calcolandole per tutte le coppie di indici specificate.
         a = torch.einsum("rgi,rgij,rgj->rg", dd, P_exp.expand(R, G, 3, 3), dd)  # [R, G]
         b = 2.0 * torch.einsum("rgi,rgij,rgj->rg", p, P_exp.expand(R, G, 3, 3), dd)  # [R, G]
         c = torch.einsum("rgi,rgij,rgj->rg", p, P_exp.expand(R, G, 3, 3), p) - k  # [R, G]
@@ -450,6 +437,7 @@ def compute_ellipsoid_depth(
             meta=gsplat_meta,
             num_gaussians=N,
             max_per_tile=config.max_gaussians_per_tile,
+            debug=config.debug,
         )
 
         # Per-pixel tile ids (computed from pixel coordinates).
@@ -460,18 +448,22 @@ def compute_ellipsoid_depth(
         pix_tile_y = (grid_y.reshape(-1) // tile_size).clamp(0, tile_height - 1)
         pix_tile_id = pix_tile_y * tile_width + pix_tile_x  # [R]
 
+        if config.debug:
+            CONSOLE.log(f"[magenta]Image size: W={W}, H={H}[/magenta]")
+            CONSOLE.log(f"[magenta]Expected tiles: ceil({W}/{tile_size})={-(-W//tile_size)}, ceil({H}/{tile_size})={-(-H//tile_size)}[/magenta]")
+            CONSOLE.log(f"[magenta]gsplat tile_width={tile_width}, tile_height={tile_height}[/magenta]")
+            CONSOLE.log(f"[magenta]pix_tile_x range: {pix_tile_x.min().item()}-{pix_tile_x.max().item()}[/magenta]")
+            CONSOLE.log(f"[magenta]pix_tile_y range: {pix_tile_y.min().item()}-{pix_tile_y.max().item()}[/magenta]")
+            CONSOLE.log(f"[magenta]pix_tile_id range: {pix_tile_id.min().item()}-{pix_tile_id.max().item()}[/magenta]")
+
         chunk = max(int(config.ray_chunk_size), 1)
         for start in range(0, active_idx.numel(), chunk):
             sel = active_idx[start : start + chunk]
             total_rays += sel.numel()
 
-            cand_idx = _gather_neighbor_tiles(
-                tile_table=tile_table,
-                pixel_tile_id=pix_tile_id[sel],
-                tile_width=tile_width,
-                tile_height=tile_height,
-                neighbor_radius=config.tile_neighbor_radius,
-            )  # [R_chunk, C]
+            # Direct lookup: each ray gets candidates from its exact tile
+            # gsplat already assigns Gaussians to ALL tiles they overlap, so no need for neighbors
+            cand_idx = tile_table[pix_tile_id[sel]]  # [R_chunk, max_per_tile]
 
             # Count valid candidates
             total_candidates_checked += (cand_idx >= 0).sum().item()

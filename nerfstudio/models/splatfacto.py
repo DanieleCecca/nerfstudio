@@ -164,8 +164,6 @@ class SplatfactoModelConfig(ModelConfig):
     """
     ellipsoid_depth_tile_size: int = 16
     """Tile size (pixels) for candidate selection (only used if method="tile")."""
-    ellipsoid_depth_tile_neighbor_radius: int = 1
-    """Neighbor tile radius (only used if method="tile")."""
     ellipsoid_depth_max_gaussians_per_tile: int = 256
     """Max Gaussians stored per tile (only used if method="tile")."""
     ellipsoid_depth_gauss_chunk_size: int = 4096
@@ -654,7 +652,6 @@ class SplatfactoModel(Model):
                     method=self.config.ellipsoid_depth_method,
                     k=self.config.ellipsoid_depth_k,
                     tile_size=self.config.ellipsoid_depth_tile_size,
-                    tile_neighbor_radius=self.config.ellipsoid_depth_tile_neighbor_radius,
                     max_gaussians_per_tile=self.config.ellipsoid_depth_max_gaussians_per_tile,
                     ray_chunk_size=8192,
                     gauss_chunk_size=self.config.ellipsoid_depth_gauss_chunk_size,
