@@ -195,28 +195,33 @@ def _make_tile_table_from_gsplat_meta(
 def _gather_neighbor_tiles(
     tile_table: torch.Tensor,
     pixel_tile_id: torch.Tensor,
-    width: int,
-    height: int,
-    tile_size: int,
+    tile_width: int,
+    tile_height: int,
     neighbor_radius: int,
 ) -> torch.Tensor:
-    """For each pixel tile id, gather candidates from neighboring tiles."""
+    """For each pixel tile id, gather candidates from neighboring tiles.
+    
+    Args:
+        tile_table: [num_tiles, max_per_tile] tensor of Gaussian indices
+        pixel_tile_id: [R] tile id for each pixel/ray
+        tile_width: number of tiles horizontally (from gsplat_meta)
+        tile_height: number of tiles vertically (from gsplat_meta)
+        neighbor_radius: how many neighboring tiles to include
+    """
     device = tile_table.device
-    num_tiles_x = (width + tile_size - 1) // tile_size
-    num_tiles_y = (height + tile_size - 1) // tile_size
-    num_tiles = num_tiles_x * num_tiles_y
+    num_tiles = tile_width * tile_height
 
-    tile_x = pixel_tile_id % num_tiles_x
-    tile_y = pixel_tile_id // num_tiles_x
+    tile_x = pixel_tile_id % tile_width
+    tile_y = pixel_tile_id // tile_width
 
     offsets = torch.arange(-neighbor_radius, neighbor_radius + 1, device=device, dtype=torch.long)
     oy, ox = torch.meshgrid(offsets, offsets, indexing="ij")
     ox = ox.reshape(-1)  # [K]
     oy = oy.reshape(-1)  # [K]
 
-    nx = (tile_x[:, None] + ox[None, :]).clamp(0, num_tiles_x - 1)
-    ny = (tile_y[:, None] + oy[None, :]).clamp(0, num_tiles_y - 1)
-    n_id = ny * num_tiles_x + nx  # [R, K]
+    nx = (tile_x[:, None] + ox[None, :]).clamp(0, tile_width - 1)
+    ny = (tile_y[:, None] + oy[None, :]).clamp(0, tile_height - 1)
+    n_id = ny * tile_width + nx  # [R, K]
     n_id = n_id.clamp(0, num_tiles - 1)
 
     # Gather [R, K, max_per_tile] then flatten
@@ -463,9 +468,8 @@ def compute_ellipsoid_depth(
             cand_idx = _gather_neighbor_tiles(
                 tile_table=tile_table,
                 pixel_tile_id=pix_tile_id[sel],
-                width=W,
-                height=H,
-                tile_size=tile_size,
+                tile_width=tile_width,
+                tile_height=tile_height,
                 neighbor_radius=config.tile_neighbor_radius,
             )  # [R_chunk, C]
 
