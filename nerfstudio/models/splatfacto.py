@@ -670,6 +670,7 @@ class SplatfactoModel(Model):
                     gsplat_meta=self.info if self.config.ellipsoid_depth_method == "tile" else None,
                 )
             except Exception as e:
+                CONSOLE.print_exception()   # oppure logger.exception(...)
                 CONSOLE.log(f"[yellow]Ellipsoid depth failed, falling back to rasterizer depth: {e}[/yellow]")
                 depth_ellipsoid = None
 
