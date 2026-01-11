@@ -168,6 +168,12 @@ class SplatfactoModelConfig(ModelConfig):
     """Max Gaussians stored per tile (only used if method="tile")."""
     ellipsoid_depth_gauss_chunk_size: int = 4096
     """Gaussians per chunk in bruteforce mode (only used if method="bruteforce")."""
+    ellipsoid_depth_output_space: Literal["ray_t", "camera_z"] = "camera_z"
+    """Output space for ellipsoid depth:
+
+    - "ray_t": ray parameter t along world rays (meters along the ray)
+    - "camera_z": camera z-depth (meters along camera forward axis; comparable to gsplat rasterizer depth and DA3)
+    """
     ellipsoid_depth_debug: bool = True
     """Print debug statistics for ellipsoid depth (hit rate, candidates per ray, etc.)."""
 
@@ -653,6 +659,7 @@ class SplatfactoModel(Model):
                     k=self.config.ellipsoid_depth_k,
                     tile_size=self.config.ellipsoid_depth_tile_size,
                     max_gaussians_per_tile=self.config.ellipsoid_depth_max_gaussians_per_tile,
+                    output_depth_space=self.config.ellipsoid_depth_output_space,
                     ray_chunk_size=8192,
                     gauss_chunk_size=self.config.ellipsoid_depth_gauss_chunk_size,
                     debug=self.config.ellipsoid_depth_debug,

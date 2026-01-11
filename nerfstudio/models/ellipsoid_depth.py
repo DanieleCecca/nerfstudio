@@ -72,6 +72,18 @@ class EllipsoidDepthConfig:
     """Alpha threshold used by gsplat rasterizer (ALPHA_THRESHOLD). Candidates with
     opac*exp(-sigma) below this are ignored for that pixel."""
 
+    output_depth_space: Literal["ray_t", "camera_z"] = "camera_z"
+    """Output depth convention:
+
+    - "ray_t": return the ray parameter t for the first ellipsoid hit (meters along the ray in world space).
+    - "camera_z": return camera z-depth for the hit point (meters along the camera forward axis).
+
+    Notes:
+    - Nerfstudio cameras use an OpenGL-like convention where the camera looks along -Z in camera space,
+      so z-depth is computed as `-p_cam[..., 2]`.
+    - "camera_z" is directly comparable to gsplat rasterizer depth and DA3 metric depth.
+    """
+
     ray_chunk_size: int = 8192
     """Number of rays processed per chunk to bound peak GPU memory."""
 
@@ -150,15 +162,15 @@ def _make_tile_table_from_gsplat_meta(
     tile_height = int(meta["tile_height"])
     tile_size = int(meta["tile_size"])
 
-    flatten_ids = meta["flatten_ids"]
+    flatten_ids = meta["flatten_ids"]#lista con indici gaussiane
     isect_offsets_orig = meta["isect_offsets"]
 
     if debug:
         CONSOLE.log(f"[magenta]gsplat_meta shapes: flatten_ids={flatten_ids.shape}, isect_offsets={isect_offsets_orig.shape}[/magenta]")
         CONSOLE.log(f"[magenta]tile_width={tile_width}, tile_height={tile_height}, tile_size={tile_size}[/magenta]")
 
-    # Use first batch/camera if present: [..., C, th, tw] -> [th, tw]
-    isect_offsets = isect_offsets_orig
+    # Use first batch/camera if present: [B, C, th, tw] o [B, tile_h, tile_w]-> [th, tw]
+    isect_offsets = isect_offsets_orig#ci dice da che indice a che indice vanno i blocchi di gauss
     while isect_offsets.dim() > 2:
         isect_offsets = isect_offsets[0]
 
@@ -169,7 +181,8 @@ def _make_tile_table_from_gsplat_meta(
     num_tiles = tile_width * tile_height
 
     # IMPORTANT: gsplat stores isect_offsets as [tile_height, tile_width] in row-major order
-    # but we need to be careful about the flattening order
+    #es [[0, 2, 2],
+    #   [3, 5, 6]]->offsets_flat = [0, 2, 2, 3, 5, 6]
     offsets_flat = isect_offsets.reshape(-1).to(torch.long)  # [num_tiles]
     
     if debug:
@@ -183,6 +196,8 @@ def _make_tile_table_from_gsplat_meta(
     ends_flat[-1] = n_isects
 
     # gsplat's flatten_ids contains Gaussian indices (may need modulo for packed formats)
+    # questo perchè l'id potrebbe essere impacchettato(lo è in gsplat) nel seguente modo raw_id = gaussian_id + K * num_gaussians
+    #quindi forziamo gli indici ad essere corretti
     gaussian_ids_sorted = (flatten_ids.to(torch.long) % num_gaussians).contiguous()
 
     if debug:
@@ -247,11 +262,19 @@ def _filter_candidates_screen_space(
     opacities = gsplat_meta["opacities"]
 
     # Squeeze to per-gaussian arrays: means2d [N,2], conics [N,3], opacities [N]
+    #così facendo consideriamo solo il primo batch/camera [B, C, N, 2]-> [N, 2]
     means2d = _squeeze_meta_first(means2d, 2)
+    #la conica rappresena la forma dell'ellissoide nel piano 2D
+    #delta^T * Cov^-1 * delta=costante (Cov^-1 è la precision matrix)
+    #conics[i] = (a, b, c) con a=cov_xx^-1, b=cov_xy^-1, c=cov_yy^-1
+    #cov simmetrica quindi cov_xy=cov_yx
     conics = _squeeze_meta_first(conics, 2)
     opacities = _squeeze_meta_first(opacities, 1)
 
     # Pixel coordinates for selected rays (row-major)
+    #i=y⋅W+x questo perchè sappiamo che W inizia una nuova riga
+    #x=imodW
+    #y=⌊i/W⌋
     px = (sel % W).to(dtype=means2d.dtype)
     py = (sel // W).to(dtype=means2d.dtype)
 
@@ -262,13 +285,15 @@ def _filter_candidates_screen_space(
     c = conics[safe_idx]  # [R, M, 3]
     o = opacities[safe_idx]  # [R, M]
 
+    #calcolo le distanze tra il centro della gaussiana e il pixel selezionato
     dx = m[..., 0] - px[:, None]
     dy = m[..., 1] - py[:, None]
     a = c[..., 0]
     b = c[..., 1]
     cc = c[..., 2]
-
+    #ΔTQΔ=[dx​dy​][[ab][​bc]​][[dx][dy​]]=adx2+2bdxdy+cdy2
     sigma = 0.5 * (a * dx * dx + cc * dy * dy) + b * dx * dy
+    #contributo = opacity * exp(-sigma)
     alpha = torch.minimum(
         o * torch.exp(-sigma),
         torch.tensor(0.999, device=o.device, dtype=o.dtype),
@@ -438,6 +463,11 @@ def compute_ellipsoid_depth(
     W = int(camera.width.item())
     N = means.shape[0]
 
+    # Camera transform (camera -> world). We'll use it to convert world hit points back to camera space.
+    c2w = camera.camera_to_worlds[0].to(device=device, dtype=dtype)  # [3,4]
+    R_c2w = c2w[:, :3]  # [3,3]
+    t_c2w = c2w[:, 3]  # [3]
+
     # Generate rays for full image (keep_shape => [H, W, 3]).
     rays = camera.generate_rays(camera_indices=0, keep_shape=True)
     origins = rays.origins.to(device=device, dtype=dtype).reshape(-1, 3)
@@ -487,7 +517,15 @@ def compute_ellipsoid_depth(
                 gauss_chunk_size=config.gauss_chunk_size,
             )
 
-            depth_flat[sel] = torch.where(hit_chunk, t_chunk, torch.full_like(t_chunk, config.no_hit_value))
+            if config.output_depth_space == "camera_z":
+                # Convert hit point back to camera space: p_cam = R^T (p_world - t), but for row vectors:
+                # p_cam = (p_world - t) @ R, where R = R_c2w
+                p_world = origins[sel] + t_chunk[:, None] * directions[sel]  # [R,3]
+                p_cam = (p_world - t_c2w[None, :]) @ R_c2w  # [R,3]
+                z_depth = -p_cam[:, 2]  # OpenGL convention: forward is -Z
+                depth_flat[sel] = torch.where(hit_chunk, z_depth, torch.full_like(z_depth, config.no_hit_value))
+            else:
+                depth_flat[sel] = torch.where(hit_chunk, t_chunk, torch.full_like(t_chunk, config.no_hit_value))
             hit_mask_flat[sel] = hit_chunk
             total_hits += hit_chunk.sum().item()
 
@@ -550,7 +588,13 @@ def compute_ellipsoid_depth(
                 eps=config.eps,
             )
 
-            depth_flat[sel] = torch.where(hit_chunk, t_chunk, torch.full_like(t_chunk, config.no_hit_value))
+            if config.output_depth_space == "camera_z":
+                p_world = origins[sel] + t_chunk[:, None] * directions[sel]  # [R,3]
+                p_cam = (p_world - t_c2w[None, :]) @ R_c2w  # [R,3]
+                z_depth = -p_cam[:, 2]
+                depth_flat[sel] = torch.where(hit_chunk, z_depth, torch.full_like(z_depth, config.no_hit_value))
+            else:
+                depth_flat[sel] = torch.where(hit_chunk, t_chunk, torch.full_like(t_chunk, config.no_hit_value))
             hit_mask_flat[sel] = hit_chunk
             total_hits += hit_chunk.sum().item()
 
