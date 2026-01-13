@@ -217,6 +217,13 @@ class SplatfactoModelConfig(ModelConfig):
     mcmc_scale_reg: float = 0.01
     """Regularization term for scale in MCMC strategy. Only enabled when using MCMC strategy"""
 
+    loss: Literal["rgb", "depth"] = "rgb"
+    """Which main loss to use.
+
+    - "rgb": original Splatfacto loss, L1(gt_rgb, pred_rgb) + SSIM(gt_rgb, pred_rgb)
+    - "depth": replace the L1 term with L1(DA3_depth(gt_rgb), expected_depth(pred)), keep SSIM on RGB
+    """
+
 
 class SplatfactoModel(Model):
     """Nerfstudio's implementation of Gaussian Splatting
@@ -292,6 +299,9 @@ class SplatfactoModel(Model):
         self.ssim = SSIM(data_range=1.0, size_average=True, channel=3)
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
         self.step = 0
+        # Cache for Depth Anything 3 depth computed from *training GT images* (full resolution).
+        # Keyed by cam_idx (image index). Stored on CPU to avoid bloating GPU memory.
+        self._da3_depth_cache_fullres: Dict[int, torch.Tensor] = {}
 
         self.crop_box: Optional[OrientedBox] = None
         if self.config.background_color == "random":
@@ -580,6 +590,18 @@ class SplatfactoModel(Model):
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
 
         camera_scale_fac = self._get_downscale_factor()
+        # Full-res intrinsics (useful for depth-supervision targets derived from the GT image).
+        try:
+            K_full0 = camera.get_intrinsics_matrices()[0].to(self.device)
+            focal_px_full = float(((K_full0[0, 0] + K_full0[1, 1]) * 0.5).item())
+        except Exception:
+            focal_px_full = 0.0
+        cam_idx = -1
+        if camera.metadata is not None and "cam_idx" in camera.metadata:
+            try:
+                cam_idx = int(camera.metadata["cam_idx"])
+            except Exception:
+                cam_idx = -1
         # IMPORTANT: never mutate the viewer's camera in-place. `rescale_output_resolution()` modifies
         # height/width with integer rounding, and repeated calls can drift to 0x0 and yield a black viewer.
         render_camera = dataclasses.replace(camera)
@@ -593,7 +615,7 @@ class SplatfactoModel(Model):
         if self.config.rasterize_mode not in ["antialiased", "classic"]:
             raise ValueError("Unknown rasterize_mode: %s", self.config.rasterize_mode)
 
-        if self.config.output_depth_during_training or not self.training:
+        if self.config.output_depth_during_training or not self.training or (self.training and self.config.loss == "depth"):
             render_mode = "RGB+ED"
         else:
             render_mode = "RGB"
@@ -687,6 +709,9 @@ class SplatfactoModel(Model):
             "accumulation": alpha.squeeze(0),  # type: ignore
             "background": background,  # type: ignore
         }  # type: ignore
+        # Aux info for depth-supervision (safe to ignore for most losses).
+        outputs["cam_idx"] = torch.tensor(cam_idx, device=self.device, dtype=torch.long)
+        outputs["focal_px_full"] = torch.tensor(focal_px_full, device=self.device, dtype=torch.float32)
 
         # Optional: Depth Anything 3 metric depth from rendered RGB (viewer visualization).
         if (not self.training) and self.config.da3_depth_enabled:
@@ -771,6 +796,7 @@ class SplatfactoModel(Model):
 
         # Set masked part of both ground-truth and rendered image to black.
         # This is a little bit sketchy for the SSIM loss.
+        mask = None
         if "mask" in batch:
             # batch["mask"] : [H, W, 1]
             mask = self._downscale_if_required(batch["mask"])
@@ -778,9 +804,27 @@ class SplatfactoModel(Model):
             assert mask.shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
             gt_img = gt_img * mask
             pred_img = pred_img * mask
-
-        Ll1 = torch.abs(gt_img - pred_img).mean()
+        
         simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
+        if self.config.loss == "depth":
+            pred_depth = outputs.get("depth", None)
+            if pred_depth is None:
+                raise RuntimeError(
+                    "config.loss='depth' requires expected depth from the renderer (RGB+ED), but outputs['depth'] is None."
+                )
+            cam_idx_t = outputs.get("cam_idx", None)
+            cam_idx = int(cam_idx_t.item()) if torch.is_tensor(cam_idx_t) else -1
+            focal_t = outputs.get("focal_px_full", None)
+            focal_px = float(focal_t.item()) if torch.is_tensor(focal_t) else 0.0
+            da3_depth_full = self._get_or_compute_da3_depth_fullres(cam_idx=cam_idx, image=batch["image"], focal_px=focal_px)
+            da3_depth = self._downscale_if_required(da3_depth_full.to(self.device))
+            if mask is not None:
+                pred_depth = pred_depth * mask
+                da3_depth = da3_depth * mask
+            Ll1 = torch.abs(da3_depth - pred_depth).mean()
+        else:
+            Ll1 = torch.abs(gt_img - pred_img).mean()
+        
         if self.config.use_scale_regularization and self.step % 10 == 0:
             scale_exp = torch.exp(self.scales)
             scale_reg = (
@@ -817,6 +861,51 @@ class SplatfactoModel(Model):
                 loss_dict["tv_loss"] = 10 * total_variation_loss(self.bil_grids.grids)
 
         return loss_dict
+
+    @torch.no_grad()
+    def _get_or_compute_da3_depth_fullres(self, cam_idx: int, image: torch.Tensor, focal_px: float) -> torch.Tensor:
+        """Compute (once per training image) Depth Anything 3 metric depth from the GT RGB.
+
+        Returns full-resolution [H,W,1] on CPU for caching. During training we then downscale
+        this depth to match the current resolution schedule.
+        """
+        if cam_idx >= 0 and cam_idx in self._da3_depth_cache_fullres:
+            return self._da3_depth_cache_fullres[cam_idx]
+
+        if focal_px <= 0:
+            raise RuntimeError("config.loss='depth' requires a valid focal length in pixels (focal_px_full).")
+
+        rgb = image
+        if rgb.dtype == torch.uint8:
+            rgb = rgb.float() / 255.0
+        rgb = rgb.to(self.device)
+
+        # If RGBA, composite deterministically to avoid varying depth targets across steps.
+        if rgb.shape[-1] == 4:
+            black_bg = torch.zeros(3, device=self.device, dtype=rgb.dtype)
+            rgb = self.composite_with_background(rgb, black_bg)
+        else:
+            rgb = rgb[..., :3]
+
+        try:
+            from nerfstudio.models.da3_depth import get_da3_metric_estimator
+        except Exception as e:
+            raise RuntimeError(
+                "config.loss='depth' requires Depth Anything 3. "
+                "See nerfstudio/models/da3_depth.py for installation instructions."
+            ) from e
+
+        est = get_da3_metric_estimator(
+            model_id=self.config.da3_model_id.lower(),
+            max_side=self.config.da3_max_side,
+            use_half=self.config.da3_use_half,
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        )
+        depth = est.infer_metric_depth(rgb, focal_px=focal_px)  # [H,W,1]
+        depth_cpu = depth.detach().cpu()
+        if cam_idx >= 0:
+            self._da3_depth_cache_fullres[cam_idx] = depth_cpu
+        return depth_cpu
 
     @torch.no_grad()
     def get_outputs_for_camera(self, camera: Cameras, obb_box: Optional[OrientedBox] = None) -> Dict[str, torch.Tensor]:
