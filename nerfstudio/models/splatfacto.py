@@ -805,7 +805,7 @@ class SplatfactoModel(Model):
             gt_img = gt_img * mask
             pred_img = pred_img * mask
         
-        simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
+        simloss = torch.tensor(0.0).to(self.device)
         if self.config.loss == "depth":
             pred_depth = outputs.get("depth", None)
             if pred_depth is None:
@@ -824,6 +824,7 @@ class SplatfactoModel(Model):
             Ll1 = torch.abs(da3_depth - pred_depth).mean()
         else:
             Ll1 = torch.abs(gt_img - pred_img).mean()
+            simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
         
         if self.config.use_scale_regularization and self.step % 10 == 0:
             scale_exp = torch.exp(self.scales)
@@ -838,10 +839,16 @@ class SplatfactoModel(Model):
         else:
             scale_reg = torch.tensor(0.0).to(self.device)
 
-        loss_dict = {
-            "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss,
-            "scale_reg": scale_reg,
-        }
+        if self.config.loss == "depth":
+            loss_dict = {
+                "main_loss": Ll1,
+                "scale_reg": scale_reg,
+            }
+        else:
+            loss_dict = {
+                "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss,
+                "scale_reg": scale_reg,
+            }
 
         # Losses for mcmc
         if self.config.strategy == "mcmc":
