@@ -99,6 +99,14 @@ class ColmapConverterToNerfstudioDataset(BaseConverterToNerfstudioDataset):
     """If True, export and use depth maps induced from SfM points."""
     include_depth_debug: bool = False
     """If --use-sfm-depth and this flag is True, also export debug images showing Sf overlaid upon input images."""
+    use_da3_depth: bool = False
+    """If True, export and use depth maps computed with Depth Anything 3 (DA3)."""
+    da3_model_id: str = "depth-anything/da3metric-large"
+    """HuggingFace model id for DA3 metric depth."""
+    da3_max_side: int = 384
+    """Downscale so that max(H,W) <= da3_max_side before DA3 inference (speed/memory)."""
+    da3_use_half: bool = True
+    """Use fp16 inference for DA3 on CUDA (if available)."""
     same_dimensions: bool = True
     """Whether to assume all images are same dimensions and so to use fast downscaling with no autorotation."""
     use_single_camera_mode: bool = True
@@ -179,6 +187,128 @@ class ColmapConverterToNerfstudioDataset(BaseConverterToNerfstudioDataset):
             )
             return image_id_to_depth_path, summary_log
         return None, summary_log
+
+    def _export_da3_depth(self) -> Tuple[Optional[Dict[int, Path]], List[str]]:
+        """If DA3 is used for creating depth images, this method will compute depth maps using Depth Anything 3.
+
+        Returns:
+            Depth file paths indexed by COLMAP image id, logs
+        """
+        import cv2
+        import imageio
+        import numpy as np
+        import torch
+
+        summary_log = []
+        if not self.use_da3_depth:
+            return None, summary_log
+
+        try:
+            from nerfstudio.models.da3_depth import get_da3_metric_estimator
+        except Exception as e:
+            raise RuntimeError(
+                "use_da3_depth=True requires Depth Anything 3. "
+                "Install it with: pip install 'depth-anything-3 @ git+https://github.com/ByteDance-Seed/Depth-Anything-3.git'"
+            ) from e
+
+        recon_dir = (
+            self.absolute_colmap_model_path
+            if self.skip_colmap
+            else self.output_dir / self.default_colmap_path()
+        )
+
+        if not (recon_dir / "images.bin").exists():
+            CONSOLE.log("[bold yellow]Warning: COLMAP images.bin not found. Cannot create DA3 depth maps.")
+            return None, summary_log
+
+        # Read COLMAP data to get image IDs and camera intrinsics
+        from nerfstudio.data.utils.colmap_parsing_utils import read_cameras_binary, read_images_binary
+
+        cam_id_to_camera = read_cameras_binary(recon_dir / "cameras.bin")
+        im_id_to_image = read_images_binary(recon_dir / "images.bin")
+
+        # Get camera intrinsics (assume single camera for now)
+        CAMERA_ID = 1
+        if CAMERA_ID not in cam_id_to_camera:
+            CONSOLE.log("[bold yellow]Warning: Camera ID 1 not found in COLMAP. Cannot create DA3 depth maps.")
+            return None, summary_log
+
+        camera = cam_id_to_camera[CAMERA_ID]
+        # Get focal length in pixels (average of fx and fy)
+        focal_px = float((camera.params[0] + camera.params[1]) * 0.5)
+
+        depth_dir = self.output_dir / "depth"
+        depth_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize DA3 estimator
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        est = get_da3_metric_estimator(
+            model_id=self.da3_model_id.lower(),
+            max_side=self.da3_max_side,
+            use_half=self.da3_use_half,
+            device=device,
+        )
+
+        image_id_to_depth_path = {}
+        if self.verbose:
+            from rich.progress import track
+
+            iter_images = track(
+                im_id_to_image.items(), total=len(im_id_to_image.items()), description="Creating DA3 depth maps ..."
+            )
+        else:
+            iter_images = im_id_to_image.items()
+
+        for im_id, im_data in iter_images:
+            # Load image
+            image_path = self.image_dir / im_data.name
+            if not image_path.exists():
+                CONSOLE.log(f"[yellow]Warning: Image {im_data.name} not found, skipping DA3 depth.")
+                continue
+
+            # Load image as RGB tensor [H, W, 3] in [0, 1]
+            img = imageio.imread(image_path)
+            if img.dtype == np.uint8:
+                img = img.astype(np.float32) / 255.0
+            else:
+                img = img.astype(np.float32)
+
+            # Handle RGBA
+            if img.shape[-1] == 4:
+                # Composite with black background
+                alpha = img[..., 3:4]
+                img = img[..., :3] * alpha + (1 - alpha) * 0.0
+
+            img_tensor = torch.from_numpy(img).to(device=device, dtype=torch.float32)
+
+            # Compute depth
+            depth = est.infer_metric_depth(img_tensor, focal_px=focal_px)  # [H, W, 1]
+
+            # Convert to 16-bit integer depth (millimeters)
+            # DA3 outputs metric depth in meters, so multiply by 1000 for millimeters
+            depth_mm = (depth.squeeze(-1).cpu().numpy() * 1000.0).astype(np.uint16)
+
+            # Save depth map
+            depth_name = Path(im_data.name)
+            if depth_name.suffix == ".jpg":
+                depth_name = depth_name.with_suffix(".png")
+            depth_path = depth_dir / depth_name
+
+            cv2.imwrite(str(depth_path), depth_mm)
+
+            image_id_to_depth_path[im_id] = depth_path
+
+        summary_log.append(
+            process_data_utils.downscale_images(
+                depth_dir,
+                self.num_downscales,
+                folder_name="depths",
+                nearest_neighbor=True,
+                verbose=self.verbose,
+            )
+        )
+
+        return image_id_to_depth_path, summary_log
 
     def _run_colmap(self, mask_path: Optional[Path] = None):
         """

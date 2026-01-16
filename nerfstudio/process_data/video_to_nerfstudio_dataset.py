@@ -141,8 +141,17 @@ class VideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
             self._run_colmap(mask_path)
 
         # Export depth maps
-        image_id_to_depth_path, log_tmp = self._export_depth()
+        image_id_to_depth_path_sfm, log_tmp = self._export_depth()
         summary_log += log_tmp
+
+        image_id_to_depth_path_da3, log_tmp = self._export_da3_depth()
+        summary_log += log_tmp
+
+        # Merge depth paths (DA3 takes precedence if both are enabled)
+        image_id_to_depth_path = image_id_to_depth_path_sfm or {}
+        if image_id_to_depth_path_da3 is not None:
+            image_id_to_depth_path.update(image_id_to_depth_path_da3)
+        image_id_to_depth_path = image_id_to_depth_path if image_id_to_depth_path else None
 
         summary_log += self._save_transforms(num_extracted_frames, image_id_to_depth_path, mask_path)
 

@@ -812,16 +812,22 @@ class SplatfactoModel(Model):
                 raise RuntimeError(
                     "config.loss='depth' requires expected depth from the renderer (RGB+ED), but outputs['depth'] is None."
                 )
-            cam_idx_t = outputs.get("cam_idx", None)
-            cam_idx = int(cam_idx_t.item()) if torch.is_tensor(cam_idx_t) else -1
-            focal_t = outputs.get("focal_px_full", None)
-            focal_px = float(focal_t.item()) if torch.is_tensor(focal_t) else 0.0
-            da3_depth_full = self._get_or_compute_da3_depth_fullres(cam_idx=cam_idx, image=batch["image"], focal_px=focal_px)
-            da3_depth = self._downscale_if_required(da3_depth_full.to(self.device))
+            # Use depth from batch if available (pre-computed during data processing)
+            if "depth_image" in batch:
+                gt_depth = batch["depth_image"].to(self.device)
+                gt_depth = self._downscale_if_required(gt_depth)
+            else:
+                # Fallback: compute DA3 depth on-the-fly (slower, for backwards compatibility)
+                cam_idx_t = outputs.get("cam_idx", None)
+                cam_idx = int(cam_idx_t.item()) if torch.is_tensor(cam_idx_t) else -1
+                focal_t = outputs.get("focal_px_full", None)
+                focal_px = float(focal_t.item()) if torch.is_tensor(focal_t) else 0.0
+                da3_depth_full = self._get_or_compute_da3_depth_fullres(cam_idx=cam_idx, image=batch["image"], focal_px=focal_px)
+                gt_depth = self._downscale_if_required(da3_depth_full.to(self.device))
             if mask is not None:
                 pred_depth = pred_depth * mask
-                da3_depth = da3_depth * mask
-            Ll1 = torch.abs(da3_depth - pred_depth).mean()
+                gt_depth = gt_depth * mask
+            Ll1 = torch.abs(gt_depth - pred_depth).mean()
         else:
             Ll1 = torch.abs(gt_img - pred_img).mean()
             simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
