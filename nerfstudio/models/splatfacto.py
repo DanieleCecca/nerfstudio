@@ -882,8 +882,31 @@ class SplatfactoModel(Model):
         Returns full-resolution [H,W,1] on CPU for caching. During training we then downscale
         this depth to match the current resolution schedule.
         """
+        # Controlla se esiste in cache
         if cam_idx >= 0 and cam_idx in self._da3_depth_cache_fullres:
             return self._da3_depth_cache_fullres[cam_idx]
+
+        # Prova a caricare da disco se esiste
+        if cam_idx >= 0:
+            import cv2
+            import numpy as np
+            from pathlib import Path
+
+            depth_dir = Path("data/depth")
+            depth_dir.mkdir(parents=True, exist_ok=True)
+            depth_path = depth_dir / f"depth_{cam_idx:05d}.png"
+
+            if depth_path.exists():
+                try:
+                    depth_mm = cv2.imread(str(depth_path), cv2.IMREAD_ANYDEPTH)
+                    if depth_mm is not None:
+                        # Converti da millimetri a metri
+                        depth = torch.from_numpy(depth_mm.astype(np.float32) / 1000.0)[:, :, None]
+                        # Cache in memoria
+                        self._da3_depth_cache_fullres[cam_idx] = depth
+                        return depth
+                except Exception as e:
+                    CONSOLE.log(f"[yellow]Warning: Could not load DA3 depth from {depth_path}: {e}[/yellow]")
 
         if focal_px <= 0:
             raise RuntimeError("config.loss='depth' requires a valid focal length in pixels (focal_px_full).")
@@ -916,6 +939,26 @@ class SplatfactoModel(Model):
         )
         depth = est.infer_metric_depth(rgb, focal_px=focal_px)  # [H,W,1]
         depth_cpu = depth.detach().cpu()
+
+        # Salva su disco se cam_idx è valido
+        if cam_idx >= 0:
+            try:
+                import cv2
+                import numpy as np
+                from pathlib import Path
+
+                depth_dir = Path("data/depth")
+                depth_dir.mkdir(parents=True, exist_ok=True)
+                depth_path = depth_dir / f"depth_{cam_idx:05d}.png"
+
+                # Converti da metri a millimetri (uint16)
+                depth_mm = (depth_cpu.squeeze(-1).numpy() * 1000.0).astype(np.uint16)
+                cv2.imwrite(str(depth_path), depth_mm)
+                CONSOLE.log(f"[green]Saved DA3 depth to {depth_path}[/green]")
+            except Exception as e:
+                CONSOLE.log(f"[yellow]Warning: Could not save DA3 depth: {e}[/yellow]")
+
+        # Cache in memoria
         if cam_idx >= 0:
             self._da3_depth_cache_fullres[cam_idx] = depth_cpu
         return depth_cpu
