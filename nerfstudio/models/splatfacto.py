@@ -195,6 +195,9 @@ class SplatfactoModelConfig(ModelConfig):
 
     export_end_of_training_dirname: str = "end_of_training_outputs"
     """Directory name (inside the experiment base dir) where end-of-training outputs are written."""
+
+    export_end_of_training_num_cameras: int = 10
+    """How many training cameras to export at end of training (sampled randomly without replacement)."""
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     """
     Classic mode of rendering will use the EWA volume splatting with a [0.3, 0.3] screen space blurring kernel. This
@@ -539,7 +542,18 @@ class SplatfactoModel(Model):
             iio.imwrite(path, d_mm, extension=".png")
 
         num_cams = len(train_dataset)
-        CONSOLE.log(f"[green]Exporting end-of-training outputs for {num_cams} cameras to {out_root}[/green]")
+        k = int(self.config.export_end_of_training_num_cameras)
+        k = max(0, min(k, num_cams))
+        if k == 0:
+            CONSOLE.log("[yellow]End-of-training export skipped: export_end_of_training_num_cameras is 0.[/yellow]")
+            return
+
+        import random
+
+        selected_cam_idxs = sorted(random.sample(range(num_cams), k=k))
+        CONSOLE.log(
+            f"[green]Exporting end-of-training outputs for {k}/{num_cams} random cameras to {out_root}[/green]"
+        )
 
         # Render and export.
         was_training = self.training
@@ -555,7 +569,7 @@ class SplatfactoModel(Model):
             EllipsoidDepthConfig = None  # type: ignore
             compute_ellipsoid_depth = None  # type: ignore
 
-        for cam_idx in range(num_cams):
+        for cam_idx in selected_cam_idxs:
             cam = train_dataset.cameras[cam_idx : cam_idx + 1].to(self.device)
             if cam.metadata is None:
                 cam.metadata = {}
