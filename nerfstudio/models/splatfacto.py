@@ -491,10 +491,12 @@ class SplatfactoModel(Model):
     def export_end_of_training_outputs(self, training_callback_attributes: TrainingCallbackAttributes, step: int):
         """Export per-training-camera outputs to disk at the end of training.
 
-        Writes three folders (one file per cam_idx):
+        Writes folders (one file per cam_idx):
         - rgb: rendered RGB from the final model
+        - depth_rasterizer: gsplat rasterizer expected depth (RGB+ED)
         - depth_da3: Depth Anything 3 metric depth inferred from the rendered RGB
         - depth_ellipsoid: geometric ray–ellipsoid first-hit depth from the final Gaussians
+        
         """
         pipeline = training_callback_attributes.pipeline
         trainer = training_callback_attributes.trainer
@@ -518,9 +520,11 @@ class SplatfactoModel(Model):
 
         out_root = base_dir / self.config.export_end_of_training_dirname
         rgb_dir = out_root / "rgb"
+        rast_dir = out_root / "depth_rasterizer"
         da3_dir = out_root / "depth_da3"
         ell_dir = out_root / "depth_ellipsoid"
         rgb_dir.mkdir(parents=True, exist_ok=True)
+        rast_dir.mkdir(parents=True, exist_ok=True)
         da3_dir.mkdir(parents=True, exist_ok=True)
         ell_dir.mkdir(parents=True, exist_ok=True)
 
@@ -582,6 +586,18 @@ class SplatfactoModel(Model):
                 continue
             rgb = rgb_out.detach().cpu()  # type: ignore[reportAttributeAccessIssue,reportOptionalMemberAccess]
             _save_rgb_png(rgb_dir / f"{cam_idx:05d}.png", rgb)
+
+            # Rasterizer expected depth (from gsplat RGB+ED render_mode in eval).
+            depth_rast_out = outs.get("depth", None)
+            if isinstance(depth_rast_out, torch.Tensor):
+                depth_rast = depth_rast_out.detach().cpu()
+                if depth_rast.ndim == 2:
+                    depth_rast = depth_rast[:, :, None]
+                _save_depth_mm_png(rast_dir / f"{cam_idx:05d}.png", depth_rast)
+            else:
+                CONSOLE.log(
+                    f"[yellow]Rasterizer depth export skipped for cam {cam_idx}: outputs['depth'] is not a Tensor.[/yellow]"
+                )
 
             # DA3 depth from rendered RGB.
             if get_da3_metric_estimator is not None:
