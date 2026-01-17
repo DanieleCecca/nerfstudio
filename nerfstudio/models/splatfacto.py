@@ -19,6 +19,7 @@ Gaussian Splatting implementation that combines many recent advancements.
 
 from __future__ import annotations
 
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple, Type, Union
 
@@ -188,6 +189,12 @@ class SplatfactoModelConfig(ModelConfig):
 
     da3_use_half: bool = True
     """Use fp16 inference for DA3 on CUDA (if available)."""
+
+    export_end_of_training_outputs: bool = False
+    """If True, export per-training-camera outputs (rgb / depth_da3 / depth_ellipsoid) when training finishes."""
+
+    export_end_of_training_dirname: str = "end_of_training_outputs"
+    """Directory name (inside the experiment base dir) where end-of-training outputs are written."""
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     """
     Classic mode of rendering will use the EWA volume splatting with a [0.3, 0.3] screen space blurring kernel. This
@@ -462,12 +469,153 @@ class SplatfactoModel(Model):
                 self.step_post_backward,
             )
         )
+        if self.config.export_end_of_training_outputs:
+            cbs.append(
+                TrainingCallback(
+                    [TrainingCallbackLocation.AFTER_TRAIN],
+                    self.export_end_of_training_outputs,
+                    args=[training_callback_attributes],
+                )
+            )
         return cbs
 
     def step_cb(self, optimizers: Optimizers, step):
         self.step = step
         self.optimizers = optimizers.optimizers
         self.schedulers = optimizers.schedulers
+
+    @torch.no_grad()
+    def export_end_of_training_outputs(self, training_callback_attributes: TrainingCallbackAttributes, step: int):
+        """Export per-training-camera outputs to disk at the end of training.
+
+        Writes three folders (one file per cam_idx):
+        - rgb: rendered RGB from the final model
+        - depth_da3: Depth Anything 3 metric depth inferred from the rendered RGB
+        - depth_ellipsoid: geometric ray–ellipsoid first-hit depth from the final Gaussians
+        """
+        pipeline = training_callback_attributes.pipeline
+        trainer = training_callback_attributes.trainer
+        if pipeline is None or getattr(pipeline, "datamanager", None) is None:
+            CONSOLE.log("[yellow]End-of-training export skipped: no pipeline/datamanager available.[/yellow]")
+            return
+        train_dataset = getattr(pipeline.datamanager, "train_dataset", None)
+        if train_dataset is None or getattr(train_dataset, "cameras", None) is None:
+            CONSOLE.log("[yellow]End-of-training export skipped: no train_dataset/cameras available.[/yellow]")
+            return
+
+        # Prefer writing into the experiment base dir (same place as config/checkpoints).
+        base_dir: Path
+        if trainer is not None and getattr(trainer, "config", None) is not None:
+            try:
+                base_dir = Path(trainer.config.get_base_dir())
+            except Exception:
+                base_dir = Path(".")
+        else:
+            base_dir = Path(".")
+
+        out_root = base_dir / self.config.export_end_of_training_dirname
+        rgb_dir = out_root / "rgb"
+        da3_dir = out_root / "depth_da3"
+        ell_dir = out_root / "depth_ellipsoid"
+        rgb_dir.mkdir(parents=True, exist_ok=True)
+        da3_dir.mkdir(parents=True, exist_ok=True)
+        ell_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            import imageio.v3 as iio
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError("imageio is required to export end-of-training images.") from e
+
+        def _save_rgb_png(path: Path, rgb: torch.Tensor) -> None:
+            # rgb: [H,W,3] float in [0,1]
+            rgb_u8 = torch.clamp(rgb, 0.0, 1.0).mul(255.0).to(torch.uint8).cpu().numpy()
+            iio.imwrite(path, rgb_u8, extension=".png")
+
+        def _save_depth_mm_png(path: Path, depth_m: torch.Tensor) -> None:
+            # depth_m: [H,W,1] float meters -> uint16 millimeters (clipped)
+            d = depth_m.squeeze(-1)
+            d = torch.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
+            d_mm = torch.clamp(d * 1000.0, 0.0, 65535.0).to(torch.uint16).cpu().numpy()
+            iio.imwrite(path, d_mm, extension=".png")
+
+        num_cams = len(train_dataset)
+        CONSOLE.log(f"[green]Exporting end-of-training outputs for {num_cams} cameras to {out_root}[/green]")
+
+        # Render and export.
+        was_training = self.training
+        self.eval()
+
+        try:
+            from nerfstudio.models.da3_depth import get_da3_metric_estimator
+        except Exception:
+            get_da3_metric_estimator = None  # type: ignore
+        try:
+            from nerfstudio.models.ellipsoid_depth import EllipsoidDepthConfig, compute_ellipsoid_depth
+        except Exception:
+            EllipsoidDepthConfig = None  # type: ignore
+            compute_ellipsoid_depth = None  # type: ignore
+
+        for cam_idx in range(num_cams):
+            cam = train_dataset.cameras[cam_idx : cam_idx + 1].to(self.device)
+            if cam.metadata is None:
+                cam.metadata = {}
+            cam.metadata["cam_idx"] = cam_idx
+
+            outs = self.get_outputs(cam)
+            rgb_out = outs.get("rgb", None)
+            if not isinstance(rgb_out, torch.Tensor):
+                CONSOLE.log(f"[yellow]RGB export skipped for cam {cam_idx}: outputs['rgb'] is not a Tensor.[/yellow]")
+                continue
+            rgb = rgb_out.detach().cpu()  # type: ignore[reportAttributeAccessIssue,reportOptionalMemberAccess]
+            _save_rgb_png(rgb_dir / f"{cam_idx:05d}.png", rgb)
+
+            # DA3 depth from rendered RGB.
+            if get_da3_metric_estimator is not None:
+                try:
+                    est = get_da3_metric_estimator(
+                        model_id=self.config.da3_model_id.lower(),
+                        max_side=self.config.da3_max_side,
+                        use_half=self.config.da3_use_half,
+                        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                    )
+                    K0 = cam.get_intrinsics_matrices()[0].to(self.device)
+                    focal = float(((K0[0, 0] + K0[1, 1]) * 0.5).item())
+                    depth_da3 = est.infer_metric_depth(rgb.to(self.device), focal_px=focal)  # [H,W,1]
+                    _save_depth_mm_png(da3_dir / f"{cam_idx:05d}.png", depth_da3)
+                except Exception as e:
+                    CONSOLE.log(f"[yellow]DA3 depth export failed for cam {cam_idx}: {e}[/yellow]")
+
+            # Ellipsoid depth from final Gaussians.
+            if compute_ellipsoid_depth is not None and EllipsoidDepthConfig is not None:
+                try:
+                    depth_cfg = EllipsoidDepthConfig(
+                        method=self.config.ellipsoid_depth_method,
+                        k=self.config.ellipsoid_depth_k,
+                        tile_size=self.config.ellipsoid_depth_tile_size,
+                        max_gaussians_per_tile=self.config.ellipsoid_depth_max_gaussians_per_tile,
+                        output_depth_space=self.config.ellipsoid_depth_output_space,
+                        ray_chunk_size=8192,
+                        gauss_chunk_size=self.config.ellipsoid_depth_gauss_chunk_size,
+                        debug=False,
+                    )
+                    alpha_mask = outs.get("accumulation", None)
+                    if not isinstance(alpha_mask, torch.Tensor):
+                        alpha_mask = None
+                    depth_ell = compute_ellipsoid_depth(
+                        camera=cam,
+                        means=self.means,
+                        scales=torch.exp(self.scales),
+                        quats=self.quats,
+                        alpha_mask=alpha_mask,
+                        config=depth_cfg,
+                        gsplat_meta=self.info if self.config.ellipsoid_depth_method == "tile" else None,
+                    )
+                    _save_depth_mm_png(ell_dir / f"{cam_idx:05d}.png", depth_ell)
+                except Exception as e:
+                    CONSOLE.log(f"[yellow]Ellipsoid depth export failed for cam {cam_idx}: {e}[/yellow]")
+
+        if was_training:
+            self.train()
 
     def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
         # Here we explicitly use the means, scales as parameters so that the user can override this function and
