@@ -46,6 +46,10 @@ from nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
 from nerfstudio.utils.misc import torch_compile
 from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
+from nerfstudio.model_components.bezier_surface import (
+    BezierPatchGeneratorConfig,
+    generate_bezier_patches_from_labeled_points,
+)
 
 
 def resize_image(image: torch.Tensor, d: int):
@@ -190,6 +194,36 @@ class SplatfactoModelConfig(ModelConfig):
     da3_use_half: bool = True
     """Use fp16 inference for DA3 on CUDA (if available)."""
 
+    # --- Bezier-surface init from semantically-labeled COLMAP seed points (optional) ---
+    bezier_init_enabled: bool = False
+    """If True and `metadata['seed_semantic_labels']` is provided, initialize Gaussians from Bezier surface patches
+    built from COLMAP seed points per semantic class.
+    """
+
+    bezier_num_u: int = 20
+    """Nu: number of uniform samples along u for each Bezier patch."""
+
+    bezier_num_v: int = 20
+    """Nv: number of uniform samples along v for each Bezier patch."""
+
+    bezier_rho: float = 20.0
+    """Global density/overlap parameter rho (divides tangential distances)."""
+
+    bezier_alpha: float = 1.0
+    """Thickness parameter alpha for the normal scale sigma_n = alpha / rho."""
+
+    bezier_knn_k: int = 64
+    """KNN neighborhood size used when building each Bezier patch (must be >= 16)."""
+
+    bezier_num_patches_per_class: int = 1
+    """How many Bezier patches to generate per semantic class label."""
+
+    bezier_center_sampling: Literal["fps", "random"] = "fps"
+    """How to choose patch centers within each semantic class."""
+
+    bezier_seed: int = 0
+    """Random seed used for patch center sampling."""
+
     export_end_of_training_outputs: bool = False
     """If True, export per-training-camera outputs (rgb / depth_da3 / depth_ellipsoid) when training finishes."""
 
@@ -254,36 +288,192 @@ class SplatfactoModel(Model):
         super().__init__(*args, **kwargs)
 
     def populate_modules(self):
-        if self.seed_points is not None and not self.config.random_init:
-            means = torch.nn.Parameter(self.seed_points[0])  # (Location, Color)
-        else:
-            means = torch.nn.Parameter((torch.rand((self.config.num_random, 3)) - 0.5) * self.config.random_scale)
-        distances, _ = k_nearest_sklearn(means.data, 3)
-        # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)
-        scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
-        num_points = means.shape[0]
-        quats = torch.nn.Parameter(random_quat_tensor(num_points))
-        dim_sh = num_sh_bases(self.config.sh_degree)
+        def _safe_normalize(v: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+            return v / torch.linalg.norm(v, dim=-1, keepdim=True).clamp_min(eps)
 
+        # Locals initialized for type-checkers; they will be assigned by one of the init paths below.
+        means: Optional[torch.nn.Parameter] = None
+        scales: Optional[torch.nn.Parameter] = None
+        quats: Optional[torch.nn.Parameter] = None
+        features_dc: Optional[torch.nn.Parameter] = None
+        features_rest: Optional[torch.nn.Parameter] = None
+        num_points: int = 0
+
+        bezier_init_done = False
+
+        # Optional: initialize Gaussians from Bezier surface samples (requires semantic labels for seed points).
+        meta = self.kwargs.get("metadata", {}) if isinstance(self.kwargs, dict) else {}
+        seed_sem = meta.get("seed_semantic_labels", None) if isinstance(meta, dict) else None
         if (
-            self.seed_points is not None
-            and not self.config.random_init
-            # We can have colors without points.
-            and self.seed_points[1].shape[0] > 0
+            self.config.bezier_init_enabled
+            and self.seed_points is not None
+            and (not self.config.random_init)
+            and seed_sem is not None
         ):
-            shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().cuda()
-            if self.config.sh_degree > 0:
-                shs[:, 0, :3] = RGB2SH(self.seed_points[1] / 255)
-                shs[:, 1:, 3:] = 0.0
+            try:
+                seed_xyz = torch.as_tensor(self.seed_points[0]).detach().cpu().float()
+                seed_rgb = torch.as_tensor(self.seed_points[1]).detach().cpu()
+                seed_labels = torch.as_tensor(seed_sem).detach().cpu().to(torch.int64)
+
+                patch_cfg = BezierPatchGeneratorConfig(
+                    num_patches_per_class=int(self.config.bezier_num_patches_per_class),
+                    knn_k=int(self.config.bezier_knn_k),
+                    control_grid_size=4,
+                    center_sampling=self.config.bezier_center_sampling,
+                    seed=int(self.config.bezier_seed),
+                    device="cpu",
+                )
+                patches_by_label = generate_bezier_patches_from_labeled_points(seed_xyz, seed_labels, patch_cfg)
+
+                Nu = int(self.config.bezier_num_u)
+                Nv = int(self.config.bezier_num_v)
+                rho = float(self.config.bezier_rho)
+                alpha = float(self.config.bezier_alpha)
+                if Nu < 2 or Nv < 2:
+                    raise ValueError("bezier_num_u and bezier_num_v must be >= 2.")
+                if rho <= 0.0:
+                    raise ValueError("bezier_rho must be > 0.")
+
+                means_list: List[torch.Tensor] = []
+                scales_list: List[torch.Tensor] = []
+                quats_list: List[torch.Tensor] = []
+                colors_list: List[torch.Tensor] = []
+                sem_list: List[torch.Tensor] = []
+
+                for lab, plist in patches_by_label.items():
+                    # Patch-level mean color from points in this class (clean + stable).
+                    lab_mask = seed_labels == int(lab)
+                    if bool(lab_mask.any()) and seed_rgb.numel() > 0:
+                        col = seed_rgb[lab_mask].float().mean(dim=0)  # (3,) in 0..255
+                    else:
+                        col = torch.tensor([127.0, 127.0, 127.0], dtype=torch.float32)
+
+                    for patch in plist:
+                        X = patch.sample(num_u=Nu, num_v=Nv).float()  # (Nu,Nv,3)
+
+                        # Tangent directions via finite differences (central; forward/backward at borders).
+                        Xu_f = torch.zeros_like(X)
+                        Xu_f[1:-1] = X[2:] - X[:-2]
+                        Xu_f[0] = X[1] - X[0]
+                        Xu_f[-1] = X[-1] - X[-2]
+                        tu = _safe_normalize(Xu_f)
+
+                        Xv_f = torch.zeros_like(X)
+                        Xv_f[:, 1:-1] = X[:, 2:] - X[:, :-2]
+                        Xv_f[:, 0] = X[:, 1] - X[:, 0]
+                        Xv_f[:, -1] = X[:, -1] - X[:, -2]
+                        tv = _safe_normalize(Xv_f)
+
+                        n = _safe_normalize(torch.cross(tu, tv, dim=-1))
+                        # Re-orthonormalize tv to be orthogonal to tu and n.
+                        tv = _safe_normalize(torch.cross(n, tu, dim=-1))
+
+                        R_frame = torch.stack([tu, tv, n], dim=-1)  # (Nu,Nv,3,3) columns
+                        # Use an already-implemented rotmat->quat conversion (COLMAP utils) and then reorder to xyzw
+                        # to match `random_quat_tensor()` convention used by gsplat params in this codebase.
+                        from nerfstudio.data.utils.colmap_parsing_utils import rotmat2qvec
+
+                        R_np = R_frame.reshape(-1, 3, 3).detach().cpu().numpy()
+                        q_wxyz = [rotmat2qvec(R_np[i]) for i in range(R_np.shape[0])]  # each is (4,) wxyz
+                        import numpy as np
+
+                        q_wxyz = torch.from_numpy(np.stack(q_wxyz).astype("float32"))
+                        # wxyz -> xyzw
+                        q_xyzw = torch.cat([q_wxyz[:, 1:4], q_wxyz[:, 0:1]], dim=-1)
+                        q_xyzw = q_xyzw / torch.linalg.norm(q_xyzw, dim=-1, keepdim=True).clamp_min(1e-8)
+                        quats_xyzw = q_xyzw.to(device=R_frame.device).reshape(Nu, Nv, 4)
+
+                        # Scales from adjacent sample distances.
+                        du = X[1:] - X[:-1]  # (Nu-1,Nv,3)
+                        dv = X[:, 1:] - X[:, :-1]  # (Nu,Nv-1,3)
+                        sigma_u = torch.zeros((Nu, Nv), dtype=torch.float32)
+                        sigma_v = torch.zeros((Nu, Nv), dtype=torch.float32)
+                        sigma_u[:-1] = torch.linalg.norm(du, dim=-1) / rho
+                        sigma_u[-1] = sigma_u[-2]
+                        sigma_v[:, :-1] = torch.linalg.norm(dv, dim=-1) / rho
+                        sigma_v[:, -1] = sigma_v[:, -2]
+                        sigma_n = torch.full((Nu, Nv), float(alpha / rho), dtype=torch.float32)
+
+                        scales_lin = torch.stack([sigma_u, sigma_v, sigma_n], dim=-1).clamp_min(1e-6)
+                        scales_log = torch.log(scales_lin)
+
+                        means_list.append(X.reshape(-1, 3))
+                        scales_list.append(scales_log.reshape(-1, 3))
+                        quats_list.append(quats_xyzw.reshape(-1, 4))
+                        colors_list.append(col[None, :].repeat(Nu * Nv, 1))
+                        sem_list.append(torch.full((Nu * Nv,), int(lab), dtype=torch.int64))
+
+                if len(means_list) > 0:
+                    means0 = torch.cat(means_list, dim=0)
+                    scales0 = torch.cat(scales_list, dim=0)
+                    quats0 = torch.cat(quats_list, dim=0)
+                    colors0 = torch.cat(colors_list, dim=0)  # (N,3) in 0..255
+                    sem0 = torch.cat(sem_list, dim=0)
+
+                    means = torch.nn.Parameter(means0)
+                    scales = torch.nn.Parameter(scales0)
+                    quats = torch.nn.Parameter(quats0)
+                    num_points = int(means0.shape[0])
+
+                    dim_sh = num_sh_bases(self.config.sh_degree)
+                    shs = torch.zeros((num_points, dim_sh, 3), dtype=torch.float32)
+                    if self.config.sh_degree > 0:
+                        shs[:, 0, :3] = RGB2SH(colors0 / 255.0)
+                        shs[:, 1:, 3:] = 0.0
+                        features_dc = torch.nn.Parameter(shs[:, 0, :])
+                        features_rest = torch.nn.Parameter(shs[:, 1:, :])
+                    else:
+                        features_dc = torch.nn.Parameter(torch.logit(colors0 / 255.0, eps=1e-10))
+                        features_rest = torch.nn.Parameter(torch.zeros((num_points, dim_sh - 1, 3)))
+
+                    # Store semantic label per Gaussian for later use (buffer).
+                    self.register_buffer("gaussian_semantic_labels", sem0, persistent=True)
+                    bezier_init_done = True
+                else:
+                    CONSOLE.log("[yellow]Bezier init enabled, but no patches were generated; falling back.[/yellow]")
+            except Exception as e:
+                CONSOLE.log(f"[yellow]Bezier init failed, falling back to standard seed init: {e}[/yellow]")
+
+        if not bezier_init_done:
+            if self.seed_points is not None and not self.config.random_init:
+                means_param = torch.nn.Parameter(self.seed_points[0])  # (Location, Color)
             else:
-                CONSOLE.log("use color only optimization with sigmoid activation")
-                shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
-            features_dc = torch.nn.Parameter(shs[:, 0, :])
-            features_rest = torch.nn.Parameter(shs[:, 1:, :])
-        else:
-            features_dc = torch.nn.Parameter(torch.rand(num_points, 3))
-            features_rest = torch.nn.Parameter(torch.zeros((num_points, dim_sh - 1, 3)))
+                means_param = torch.nn.Parameter(
+                    (torch.rand((self.config.num_random, 3)) - 0.5) * self.config.random_scale
+                )
+            means = means_param
+            distances, _ = k_nearest_sklearn(means_param.data, 3)
+            # find the average of the three nearest neighbors for each point and use that as the scale
+            avg_dist = distances.mean(dim=-1, keepdim=True)
+            scales_param = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
+            scales = scales_param
+            num_points = int(means_param.shape[0])
+            quats_param = torch.nn.Parameter(random_quat_tensor(num_points))
+            quats = quats_param
+            dim_sh = num_sh_bases(self.config.sh_degree)
+
+            if (
+                self.seed_points is not None
+                and not self.config.random_init
+                # We can have colors without points.
+                and self.seed_points[1].shape[0] > 0
+            ):
+                shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().cuda()
+                if self.config.sh_degree > 0:
+                    shs[:, 0, :3] = RGB2SH(self.seed_points[1] / 255)
+                    shs[:, 1:, 3:] = 0.0
+                else:
+                    CONSOLE.log("use color only optimization with sigmoid activation")
+                    shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
+                features_dc = torch.nn.Parameter(shs[:, 0, :])
+                features_rest = torch.nn.Parameter(shs[:, 1:, :])
+            else:
+                features_dc = torch.nn.Parameter(torch.rand(num_points, 3))
+                features_rest = torch.nn.Parameter(torch.zeros((num_points, dim_sh - 1, 3)))
+
+        # At this point, one of the init paths must have produced the Gaussian params.
+        assert means is not None and scales is not None and quats is not None and features_dc is not None and features_rest is not None
+        num_points = int(means.shape[0])
 
         opacities = torch.nn.Parameter(torch.logit(0.1 * torch.ones(num_points, 1)))
         self.gauss_params = torch.nn.ParameterDict(

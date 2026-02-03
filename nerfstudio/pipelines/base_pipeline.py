@@ -39,6 +39,7 @@ from nerfstudio.data.datamanagers.base_datamanager import DataManager, DataManag
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import profiler
+from nerfstudio.utils.rich_utils import CONSOLE
 
 
 def module_wrapper(ddp_or_model: Union[DDP, Model]) -> Model:
@@ -266,10 +267,44 @@ class VanillaPipeline(Pipeline):
         # TODO(ethan): get rid of scene_bounds from the model
         assert self.datamanager.train_dataset is not None, "Missing input dataset"
 
+        # Optional: SAM2-based semantic labels for COLMAP seed points (clean init-time labeling).
+        model_metadata: Dict[str, Any] = dict(self.datamanager.train_dataset.metadata)
+        sam2_enabled = bool(getattr(config.model, "sam2_semantic_init_enabled", False))
+        if sam2_enabled and seed_pts is not None and hasattr(self.datamanager, "train_dataparser_outputs"):
+            try:
+                from nerfstudio.models.sam2_semantics import SAM2SemanticInitConfig, compute_seed_semantic_labels_from_sam2
+
+                sam2_cfg = SAM2SemanticInitConfig(
+                    model_id=str(getattr(config.model, "sam2_model_id", "facebook/sam2-hiera-large")),
+                    image_idx=int(getattr(config.model, "sam2_init_image_idx", 0)),
+                    label_id=int(getattr(config.model, "sam2_label_id", 1)),
+                    point_coords=getattr(config.model, "sam2_point_coords", None),
+                    point_labels=getattr(config.model, "sam2_point_labels", None),
+                    box_xyxy=getattr(config.model, "sam2_box_xyxy", None),
+                    mask_distance_px=int(getattr(config.model, "sam2_mask_distance_px", 0)),
+                    auto_grid_stride=int(getattr(config.model, "sam2_auto_grid_stride", 32)),
+                    auto_max_masks=int(getattr(config.model, "sam2_auto_max_masks", 64)),
+                    auto_min_mask_area=int(getattr(config.model, "sam2_auto_min_mask_area", 256)),
+                    auto_dedup_iou_thresh=float(getattr(config.model, "sam2_auto_dedup_iou_thresh", 0.9)),
+                    device=str(getattr(config.model, "sam2_device", "cuda")) if getattr(config.model, "sam2_device", None) else None,
+                )
+                labels = compute_seed_semantic_labels_from_sam2(
+                    train_dataset=self.datamanager.train_dataset,
+                    train_dataparser_outputs=self.datamanager.train_dataparser_outputs,  # type: ignore
+                    config=sam2_cfg,
+                )
+                model_metadata["seed_semantic_labels"] = labels
+                nobj = int(torch.unique(labels[labels > 0]).numel())
+                CONSOLE.log(
+                    f"[green]SAM2 semantic init: labeled {int((labels > 0).sum().item())} / {int(labels.numel())} seed points (objects={nobj})[/green]"
+                )
+            except Exception as e:
+                CONSOLE.log(f"[yellow]SAM2 semantic init skipped: {e}[/yellow]")
+
         self._model = config.model.setup(
             scene_box=self.datamanager.train_dataset.scene_box,
             num_train_data=len(self.datamanager.train_dataset),
-            metadata=self.datamanager.train_dataset.metadata,
+            metadata=model_metadata,
             device=device,
             grad_scaler=grad_scaler,
             seed_points=seed_pts,

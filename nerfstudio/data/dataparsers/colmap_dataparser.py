@@ -101,7 +101,6 @@ class ColmapDataParserConfig(DataParserConfig):
     load_3D_points: bool = True
     """Whether to load the 3D points from the colmap reconstruction. This is helpful for Gaussian splatting and
     generally unused otherwise, but it's typically harmless so we default to True."""
-    max_2D_matches_per_3D_point: int = 0
     """Maximum number of 2D matches per 3D point. If set to -1, all 2D matches are loaded. If set to 0, no 2D matches are loaded."""
 
 
@@ -262,6 +261,7 @@ class ColmapDataParser(DataParser):
         image_filenames = []
         mask_filenames = []
         depth_filenames = []
+        colmap_im_ids: List[int] = []
         poses = []
 
         fx = []
@@ -297,6 +297,9 @@ class ColmapDataParser(DataParser):
             )
 
             image_filenames.append(Path(frame["file_path"]))
+            # Mapping between dataset image index and original COLMAP image id.
+            # This is useful when consuming `points3D_image_ids` (2D tracks) from COLMAP.
+            colmap_im_ids.append(int(frame.get("colmap_im_id", -1)))
             poses.append(frame["transform_matrix"])
             if "mask_path" in frame:
                 mask_filenames.append(Path(frame["mask_path"]))
@@ -335,6 +338,9 @@ class ColmapDataParser(DataParser):
         )
 
         num_tiles = self.config.tiling_factor**2
+        # Expand COLMAP image ids to match the post-tiling filename list shape (N * num_tiles).
+        if num_tiles > 1:
+            colmap_im_ids = [colmap_im_ids[i] for i in range(len(colmap_im_ids)) for _ in range(num_tiles)]
 
         image_filenames = [image_filenames[i * num_tiles + j] for i in indices for j in range(num_tiles)]
         mask_filenames = (
@@ -347,6 +353,7 @@ class ColmapDataParser(DataParser):
             if len(depth_filenames) > 0
             else []
         )
+        colmap_im_ids = [colmap_im_ids[i * num_tiles + j] for i in indices for j in range(num_tiles)]
 
         idx_tensor = torch.tensor(indices, dtype=torch.long)
         poses = poses[idx_tensor].repeat_interleave(num_tiles, dim=0)
@@ -398,6 +405,7 @@ class ColmapDataParser(DataParser):
         if self.config.load_3D_points:
             # Load 3D points
             metadata.update(self._load_3D_points(colmap_path, transform_matrix, scale_factor))
+        metadata["colmap_im_ids"] = torch.tensor(colmap_im_ids, dtype=torch.int64)
 
         dataparser_outputs = DataparserOutputs(
             image_filenames=image_filenames,
