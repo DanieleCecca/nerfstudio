@@ -101,7 +101,12 @@ class ColmapDataParserConfig(DataParserConfig):
     load_3D_points: bool = True
     """Whether to load the 3D points from the colmap reconstruction. This is helpful for Gaussian splatting and
     generally unused otherwise, but it's typically harmless so we default to True."""
-    """Maximum number of 2D matches per 3D point. If set to -1, all 2D matches are loaded. If set to 0, no 2D matches are loaded."""
+    max_2D_matches_per_3D_point: int = 0
+    """Maximum number of 2D matches per 3D point.
+
+    - If set to -1, all 2D matches are loaded.
+    - If set to 0, no 2D matches are loaded.
+    """
 
 
 class ColmapDataParser(DataParser):
