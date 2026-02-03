@@ -224,6 +224,50 @@ class SplatfactoModelConfig(ModelConfig):
     bezier_seed: int = 0
     """Random seed used for patch center sampling."""
 
+    # --- SAM2 semantic init (optional; executed at train startup in VanillaPipeline) ---
+    sam2_semantic_init_enabled: bool = False
+    """If True, run SAM2 at pipeline init to compute semantic labels for COLMAP seed points."""
+
+    sam2_model_id: str = "facebook/sam2-hiera-large"
+    """HuggingFace model id for SAM2."""
+
+    sam2_init_image_idx: int = 0
+    """Training image index to run SAM2 on."""
+
+    sam2_label_id: int = 1
+    """Base label id. If prompts are provided, points inside the mask get this label.
+    If no prompts are provided, prompt-free mode assigns labels sam2_label_id, sam2_label_id+1, ... per discovered object.
+    """
+
+    # Prompts (optional). If both point prompts and box are None, we run prompt-free "segment everything".
+    sam2_point_coords: Optional[List[Tuple[float, float]]] = None
+    """List of (x,y) point prompts in pixel coordinates (after any dataparser downscale)."""
+
+    sam2_point_labels: Optional[List[int]] = None
+    """List of prompt labels for point coords (1=positive, 0=negative). Must match sam2_point_coords length."""
+
+    sam2_box_xyxy: Optional[Tuple[float, float, float, float]] = None
+    """Optional bounding box prompt (x0,y0,x1,y1) in pixels."""
+
+    sam2_mask_distance_px: int = 0
+    """If >0, dilate the SAM mask by this pixel radius before point selection."""
+
+    # Prompt-free mode knobs.
+    sam2_auto_grid_stride: int = 32
+    """Pixel stride for grid point prompts when no prompts are provided."""
+
+    sam2_auto_max_masks: int = 64
+    """Maximum number of unique masks (objects) to keep in prompt-free mode."""
+
+    sam2_auto_min_mask_area: int = 256
+    """Minimum mask area (pixels) to keep in prompt-free mode."""
+
+    sam2_auto_dedup_iou_thresh: float = 0.9
+    """IoU threshold for deduplicating similar masks in prompt-free mode."""
+
+    sam2_device: Optional[str] = None
+    """Optional device override for SAM2 inference (e.g., 'cuda' or 'cpu')."""
+
     export_end_of_training_outputs: bool = False
     """If True, export per-training-camera outputs (rgb / depth_da3 / depth_ellipsoid) when training finishes."""
 
