@@ -272,7 +272,10 @@ class VanillaPipeline(Pipeline):
         sam2_enabled = bool(getattr(config.model, "sam2_semantic_init_enabled", False))
         if sam2_enabled and seed_pts is not None and hasattr(self.datamanager, "train_dataparser_outputs"):
             try:
-                from nerfstudio.models.sam2_semantics import SAM2SemanticInitConfig, compute_seed_semantic_labels_from_sam2
+                from nerfstudio.models.sam2_semantics import (
+                    SAM2SemanticInitConfig,
+                    compute_seed_semantic_labels_and_labelmap_from_sam2,
+                )
 
                 sam2_cfg = SAM2SemanticInitConfig(
                     model_id=str(getattr(config.model, "sam2_model_id", "facebook/sam2-hiera-large")),
@@ -288,7 +291,7 @@ class VanillaPipeline(Pipeline):
                     auto_dedup_iou_thresh=float(getattr(config.model, "sam2_auto_dedup_iou_thresh", 0.9)),
                     device=str(getattr(config.model, "sam2_device", "cuda")) if getattr(config.model, "sam2_device", None) else None,
                 )
-                labels = compute_seed_semantic_labels_from_sam2(
+                labels, label_map, image_uint8 = compute_seed_semantic_labels_and_labelmap_from_sam2(
                     train_dataset=self.datamanager.train_dataset,
                     train_dataparser_outputs=self.datamanager.train_dataparser_outputs,  # type: ignore
                     config=sam2_cfg,
@@ -298,6 +301,50 @@ class VanillaPipeline(Pipeline):
                 CONSOLE.log(
                     f"[green]SAM2 semantic init: labeled {int((labels > 0).sum().item())} / {int(labels.numel())} seed points (objects={nobj})[/green]"
                 )
+
+                # Save visualization (label map + overlay) so it is easy to inspect.
+                try:
+                    import numpy as np
+                    from pathlib import Path
+                    from PIL import Image
+
+                    out_dir = Path("data/sam2")
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    idx = int(sam2_cfg.image_idx)
+
+                    # Colorize label map.
+                    lm = label_map.detach().cpu().numpy().astype(np.int32)
+                    H, W = lm.shape
+                    color = np.zeros((H, W, 3), dtype=np.uint8)
+                    unique = np.unique(lm)
+                    # Deterministic palette per label.
+                    rng = np.random.default_rng(0)
+                    palette = {}
+                    for lab in unique:
+                        if lab <= 0:
+                            continue
+                        palette[int(lab)] = rng.integers(low=0, high=255, size=(3,), dtype=np.uint8)
+                    for lab, col in palette.items():
+                        color[lm == lab] = col
+
+                    label_png = out_dir / f"labelmap_{idx:05d}.png"
+                    Image.fromarray(color).save(label_png)
+
+                    img = image_uint8
+                    if img.shape[2] == 4:
+                        img = img[:, :, :3]
+                    img = img.astype(np.uint8, copy=False)
+                    overlay = img.copy()
+                    mask = lm > 0
+                    alpha = 0.55
+                    overlay[mask] = (overlay[mask] * (1.0 - alpha) + color[mask] * alpha).astype(np.uint8)
+                    overlay_png = out_dir / f"overlay_{idx:05d}.png"
+                    Image.fromarray(overlay).save(overlay_png)
+
+                    CONSOLE.log(f"[green]Saved SAM2 label map to {label_png}[/green]")
+                    CONSOLE.log(f"[green]Saved SAM2 overlay to {overlay_png}[/green]")
+                except Exception as e:
+                    CONSOLE.log(f"[yellow]Warning: could not save SAM2 visualization: {e}[/yellow]")
             except Exception as e:
                 CONSOLE.log(f"[yellow]SAM2 semantic init skipped: {e}[/yellow]")
 

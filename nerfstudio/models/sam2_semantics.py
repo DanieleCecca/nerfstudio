@@ -320,7 +320,45 @@ def compute_seed_semantic_labels_from_sam2(
     # Load the chosen training image (uint8).
     image_uint8 = train_dataset.get_numpy_image(int(config.image_idx))  # (H,W,3/4) uint8
 
-    # Run SAM2.
+    labels, _, _ = compute_seed_semantic_labels_and_labelmap_from_sam2(
+        train_dataset=train_dataset, train_dataparser_outputs=train_dataparser_outputs, config=config
+    )
+    return labels
+
+def compute_seed_semantic_labels_and_labelmap_from_sam2(
+    *,
+    train_dataset: Any,
+    train_dataparser_outputs: Any,
+    config: SAM2SemanticInitConfig,
+) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+    """Like `compute_seed_semantic_labels_from_sam2`, but also returns the per-pixel label map and the input image.
+
+    Returns:
+        labels: (N_points,) int64
+        label_map: (H,W) int64 (0=background; >0 are semantic instance ids)
+        image_uint8: (H,W,3/4) uint8 training image used for SAM2
+    """
+    md: Dict[str, Any] = getattr(train_dataparser_outputs, "metadata", {})
+    if "points3D_xyz" not in md:
+        raise RuntimeError("Missing 'points3D_xyz' in dataparser metadata; enable COLMAP 3D point loading.")
+    if "points3D_image_ids" not in md or "points3D_points2D_xy" not in md:
+        raise RuntimeError(
+            "Missing COLMAP 2D tracks in metadata. Set ColmapDataParserConfig.max_2D_matches_per_3D_point to -1 or >0."
+        )
+    if "colmap_im_ids" not in md:
+        raise RuntimeError("Missing 'colmap_im_ids' in metadata; update ColmapDataParser to export it.")
+
+    points_image_ids: torch.Tensor = md["points3D_image_ids"]  # (N,M)
+    points_xy: torch.Tensor = md["points3D_points2D_xy"]  # (N,M,2)
+    colmap_im_ids: torch.Tensor = md["colmap_im_ids"]  # (num_images,)
+
+    num_images = int(colmap_im_ids.shape[0])
+    if not (0 <= int(config.image_idx) < num_images):
+        raise ValueError(f"config.image_idx={config.image_idx} out of range [0, {num_images-1}]")
+
+    image_uint8 = train_dataset.get_numpy_image(int(config.image_idx))  # (H,W,3/4) uint8
+
+    # Run SAM2 -> build label_map
     pred = SAM2MaskPredictor(model_id=config.model_id, device=config.device)
     if config.point_coords is None and config.box_xyxy is None:
         masks = _predict_masks_grid_prompts(
@@ -332,10 +370,10 @@ def compute_seed_semantic_labels_from_sam2(
             dedup_iou_thresh=float(config.auto_dedup_iou_thresh),
         )
         if len(masks) == 0:
-            # no objects found -> all background
-            return torch.zeros((points_image_ids.shape[0],), dtype=torch.int64)
+            H, W = int(image_uint8.shape[0]), int(image_uint8.shape[1])
+            label_map = torch.zeros((H, W), dtype=torch.int64)
+            return torch.zeros((points_image_ids.shape[0],), dtype=torch.int64), label_map, image_uint8
 
-        # Build a per-pixel label map. Smaller masks overwrite larger ones.
         areas = [int(m.sum().item()) for m in masks]
         order = np.argsort(np.array(areas))  # ascending
         H, W = int(masks[0].shape[0]), int(masks[0].shape[1])
@@ -355,34 +393,32 @@ def compute_seed_semantic_labels_from_sam2(
         label_map = torch.zeros((H, W), dtype=torch.int64)
         label_map[mask] = max(1, int(config.label_id))
 
-    # Associate points to this image via COLMAP image id.
+    # Project 2D tracks for target image -> vote labels per 3D point.
     target_im_id = int(colmap_im_ids[int(config.image_idx)].item())
     if target_im_id < 0:
         raise RuntimeError("Invalid target COLMAP image id (<0).")
 
-    # Find all (point_idx, obs_idx) where observation belongs to the target image.
     matches = points_image_ids == target_im_id
     pairs = torch.nonzero(matches, as_tuple=False)  # (K,2)
     labels = torch.zeros((points_image_ids.shape[0],), dtype=torch.int64)
     if pairs.numel() == 0:
-        return labels
+        return labels, label_map, image_uint8
 
     pidx = pairs[:, 0]
     oidx = pairs[:, 1]
-    xy = points_xy[pidx, oidx]  # (K,2) float
+    xy = points_xy[pidx, oidx]  # (K,2)
 
-    # Convert (x,y) -> int pixel indices.
     x = torch.round(xy[:, 0]).to(torch.int64)
     y = torch.round(xy[:, 1]).to(torch.int64)
     in_bounds = (x >= 0) & (x < W) & (y >= 0) & (y < H)
     if not bool(in_bounds.any()):
-        return labels
+        return labels, label_map, image_uint8
 
     pidx = pidx[in_bounds]
     x = x[in_bounds]
     y = y[in_bounds]
 
     pixel_labels = label_map[y, x]
-    # Majority vote per point if multiple observations.
-    return _labels_from_labelmap_votes(points_image_ids.shape[0], pidx, pixel_labels)
+    labels = _labels_from_labelmap_votes(points_image_ids.shape[0], pidx, pixel_labels)
+    return labels, label_map, image_uint8
 
