@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional
 
 import torch
 
@@ -65,6 +65,19 @@ class BezierSurfacePatch:
         c = float(math.comb(n, i))
         return c * (t**i) * ((1.0 - t) ** (n - i))
 
+    @classmethod
+    def bernstein_basis(cls, n: int, t: torch.Tensor) -> torch.Tensor:
+        """Stacked Bernstein basis for a given degree n.
+
+        Args:
+            n: degree
+            t: (...,) tensor in [0,1]
+
+        Returns:
+            B: (n+1, ...) where B[i] = B_{i,n}(t)
+        """
+        return torch.stack([cls.bernstein(i, n, t) for i in range(n + 1)], dim=0)
+
     def sample(self, num_u: int = 20, num_v: int = 20) -> torch.Tensor:
         """
         Sample points on the surface.
@@ -86,14 +99,311 @@ class BezierSurfacePatch:
         v = torch.linspace(0.0, 1.0, steps=num_v, device=device, dtype=dtype)
 
         # Precompute Bernstein basis for all u,v.
-        Bu = torch.stack([self.bernstein(i, m, u) for i in range(m + 1)], dim=0)  # (m+1, num_u)
-        Bv = torch.stack([self.bernstein(j, n, v) for j in range(n + 1)], dim=0)  # (n+1, num_v)
+        Bu = self.bernstein_basis(m, u)  # (m+1, num_u)
+        Bv = self.bernstein_basis(n, v)  # (n+1, num_v)
 
         # Evaluate surface: S(u,v) = sum_{i,j} Bu[i,u] * Bv[j,v] * P[i,j]
         # We do this with einsum for clarity.
         # Output shape: (num_u, num_v, 3)
         return torch.einsum("iu,jv,ijc->uvc", Bu, Bv, cp)
 
+
+def fit_bezier_control_points_from_grid(
+    target_points: torch.Tensor,
+    m: int,
+    n: int,
+    u: Optional[torch.Tensor] = None,
+    v: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Least-squares fit Bezier surface control points to target points on a uniform (u,v) grid.
+
+    This solves, independently per coordinate:
+        A @ vec(P) ~= vec(X)
+    where A[(i_u,i_v),(i,j)] = B_{i,m}(u_i) * B_{j,n}(v_j).
+
+    Args:
+        target_points: (Nu, Nv, 3) points X(u_i,v_j)
+        m: Bezier degree in u (control points along u = m+1)
+        n: Bezier degree in v (control points along v = n+1)
+        u: optional (Nu,) parameter samples in [0,1]. Defaults to uniform linspace.
+        v: optional (Nv,) parameter samples in [0,1]. Defaults to uniform linspace.
+
+    Returns:
+        control_points: (m+1, n+1, 3)
+    """
+    if target_points.ndim != 3 or target_points.shape[-1] != 3:
+        raise ValueError(f"target_points must have shape (Nu,Nv,3), got {tuple(target_points.shape)}")
+    Nu, Nv = int(target_points.shape[0]), int(target_points.shape[1])
+    if Nu < (m + 1) or Nv < (n + 1):
+        raise ValueError(
+            f"Need at least (m+1)x(n+1) samples to fit: got ({Nu},{Nv}) for degrees ({m},{n})."
+        )
+
+    device = target_points.device
+    dtype = target_points.dtype
+    if u is None:
+        u = torch.linspace(0.0, 1.0, steps=Nu, device=device, dtype=dtype)
+    if v is None:
+        v = torch.linspace(0.0, 1.0, steps=Nv, device=device, dtype=dtype)
+    assert u is not None
+    assert v is not None
+    if u.ndim != 1 or u.shape[0] != Nu:
+        raise ValueError("u must have shape (Nu,)")
+    if v.ndim != 1 or v.shape[0] != Nv:
+        raise ValueError("v must have shape (Nv,)")
+
+    Bu = BezierSurfacePatch.bernstein_basis(m, u)  # (m+1, Nu)
+    Bv = BezierSurfacePatch.bernstein_basis(n, v)  # (n+1, Nv)
+
+    # A: (Nu*Nv, (m+1)*(n+1))
+    A = torch.einsum("iu,jv->uvij", Bu, Bv).reshape(Nu * Nv, (m + 1) * (n + 1))
+    Y = target_points.reshape(Nu * Nv, 3)
+
+    # Solve least squares (overdetermined) for vec(P) per coordinate.
+    sol = torch.linalg.lstsq(A, Y).solution  # ((m+1)*(n+1), 3)
+    return sol.reshape(m + 1, n + 1, 3)
+
+
+class PairedBezierSurfacePatch:
+    """Paired (out/in) Bezier patches with shared (u,v) domain and linear interpolation in-between.
+
+    Given S_out(u,v) and S_in(u,v), define:
+        w_r = r/(R-1), r=0..R-1
+        S_r(u,v) = (1-w_r) S_out(u,v) + w_r S_in(u,v)
+
+    Because Bezier surfaces are linear in control points, we can equivalently interpolate control points:
+        P_r = (1-w_r) P_out + w_r P_in
+    """
+
+    def __init__(self, control_points_out: torch.Tensor, control_points_in: torch.Tensor):
+        if control_points_out.shape != control_points_in.shape:
+            raise ValueError(
+                f"control_points_out and control_points_in must have same shape, got "
+                f"{tuple(control_points_out.shape)} vs {tuple(control_points_in.shape)}"
+            )
+        if control_points_out.ndim != 3 or control_points_out.shape[-1] != 3:
+            raise ValueError(
+                f"control_points must have shape (m,n,3), got {tuple(control_points_out.shape)}"
+            )
+        self.control_points_out = control_points_out
+        self.control_points_in = control_points_in
+
+    def sample_interpolated(self, num_r: int, num_u: int = 20, num_v: int = 20) -> torch.Tensor:
+        """Uniformly sample the R interpolated surfaces on the shared (u,v) domain.
+
+        Returns:
+            X: (R, num_u, num_v, 3) where X[r,i,j] = S_r(u_i,v_j)
+        """
+        if num_r < 2:
+            raise ValueError("num_r must be >= 2 for paired surface interpolation.")
+        cp_out = self.control_points_out
+        cp_in = self.control_points_in
+        m = int(cp_out.shape[0]) - 1
+        n = int(cp_out.shape[1]) - 1
+        device = cp_out.device
+        dtype = cp_out.dtype
+
+        u = torch.linspace(0.0, 1.0, steps=num_u, device=device, dtype=dtype)
+        v = torch.linspace(0.0, 1.0, steps=num_v, device=device, dtype=dtype)
+        Bu = BezierSurfacePatch.bernstein_basis(m, u)  # (m+1, num_u)
+        Bv = BezierSurfacePatch.bernstein_basis(n, v)  # (n+1, num_v)
+
+        w = torch.linspace(0.0, 1.0, steps=num_r, device=device, dtype=dtype).view(num_r, 1, 1, 1)
+        cp = (1.0 - w) * cp_out.unsqueeze(0) + w * cp_in.unsqueeze(0)  # (R, m+1, n+1, 3)
+
+        # Evaluate all R surfaces in batch.
+        return torch.einsum("iu,jv,rijc->ruvc", Bu, Bv, cp)
+
+
+class BezierShellPatch:
+    """Closed shell made of paired out/in patches plus 4 side walls sharing border control points.
+
+    The shell is C0-closed (no gaps) by construction because wall patches re-use the exact border
+    control points of `control_points_out` and `control_points_in`.
+    """
+
+    def __init__(self, control_points_out: torch.Tensor, control_points_in: torch.Tensor):
+        if control_points_out.shape != control_points_in.shape:
+            raise ValueError(
+                f"control_points_out and control_points_in must have same shape, got "
+                f"{tuple(control_points_out.shape)} vs {tuple(control_points_in.shape)}"
+            )
+        if control_points_out.ndim != 3 or control_points_out.shape[-1] != 3:
+            raise ValueError(
+                f"control_points must have shape (m,n,3), got {tuple(control_points_out.shape)}"
+            )
+        self.control_points_out = control_points_out
+        self.control_points_in = control_points_in
+
+        # Reuse the paired-surface helper for intermediate layers.
+        self.paired = PairedBezierSurfacePatch(control_points_out, control_points_in)
+
+    def sample_intermediate_layers(self, num_r: int, num_u: int = 20, num_v: int = 20) -> torch.Tensor:
+        """Sample the R interpolated surfaces S_r(u,v) between out and in (including endpoints).
+
+        Returns:
+            (R, num_u, num_v, 3)
+        """
+        return self.paired.sample_interpolated(num_r=num_r, num_u=num_u, num_v=num_v)
+
+    def sample_walls(self, num_r: int, num_u: int = 20, num_v: int = 20) -> Dict[str, torch.Tensor]:
+        """Sample the 4 side walls that close the shell.
+
+        We treat each wall as a Bezier surface of degree (edge_degree, 1), where the 2 control points
+        along the thickness direction are the out/in edge control points (shared).
+
+        Args:
+            num_r: samples along thickness direction (w in [0,1]) to match w_r
+            num_u: samples along u for the v-constant walls (top/bottom)
+            num_v: samples along v for the u-constant walls (left/right)
+
+        Returns:
+            dict with keys: "u0", "u1", "v0", "v1"
+            - "u0": (R, num_v, 3) wall for u=0
+            - "u1": (R, num_v, 3) wall for u=1
+            - "v0": (R, num_u, 3) wall for v=0
+            - "v1": (R, num_u, 3) wall for v=1
+        """
+        if num_r < 2:
+            raise ValueError("num_r must be >= 2 for shell walls.")
+        cp_out = self.control_points_out
+        cp_in = self.control_points_in
+
+        # Wall at u=0 and u=1: parameterized by (v, w)
+        cp_u0 = torch.stack([cp_out[0, :, :], cp_in[0, :, :]], dim=1)  # (n+1, 2, 3)
+        cp_u1 = torch.stack([cp_out[-1, :, :], cp_in[-1, :, :]], dim=1)  # (n+1, 2, 3)
+        wall_u0 = BezierSurfacePatch(cp_u0).sample(num_u=num_v, num_v=num_r)  # (Nv, R, 3)
+        wall_u1 = BezierSurfacePatch(cp_u1).sample(num_u=num_v, num_v=num_r)  # (Nv, R, 3)
+
+        # Wall at v=0 and v=1: parameterized by (u, w)
+        cp_v0 = torch.stack([cp_out[:, 0, :], cp_in[:, 0, :]], dim=1)  # (m+1, 2, 3)
+        cp_v1 = torch.stack([cp_out[:, -1, :], cp_in[:, -1, :]], dim=1)  # (m+1, 2, 3)
+        wall_v0 = BezierSurfacePatch(cp_v0).sample(num_u=num_u, num_v=num_r)  # (Nu, R, 3)
+        wall_v1 = BezierSurfacePatch(cp_v1).sample(num_u=num_u, num_v=num_r)  # (Nu, R, 3)
+
+        # Transpose to make thickness dimension first: (R, edge_samples, 3)
+        return {
+            "u0": wall_u0.permute(1, 0, 2).contiguous(),
+            "u1": wall_u1.permute(1, 0, 2).contiguous(),
+            "v0": wall_v0.permute(1, 0, 2).contiguous(),
+            "v1": wall_v1.permute(1, 0, 2).contiguous(),
+        }
+
+
+def sample_paired_bezier_surfaces(
+    control_points_out: torch.Tensor,
+    control_points_in: torch.Tensor,
+    *,
+    num_r: int,
+    num_u: int = 20,
+    num_v: int = 20,
+) -> torch.Tensor:
+    """Sample interpolated Bezier surfaces between paired out/in control points (batched).
+
+    This is a batched equivalent of :meth:`PairedBezierSurfacePatch.sample_interpolated`.
+
+    Args:
+        control_points_out: (m+1, n+1, 3) or (B, m+1, n+1, 3)
+        control_points_in:  same shape as control_points_out
+        num_r: number of layers along thickness (w) including endpoints
+        num_u: samples along u
+        num_v: samples along v
+
+    Returns:
+        X: (B, R, num_u, num_v, 3) float tensor
+    """
+    if num_r < 2:
+        raise ValueError("num_r must be >= 2 for paired surface interpolation.")
+    if control_points_out.shape != control_points_in.shape:
+        raise ValueError("control_points_out and control_points_in must have the same shape.")
+    if control_points_out.ndim == 3:
+        cp_out = control_points_out.unsqueeze(0)
+        cp_in = control_points_in.unsqueeze(0)
+    elif control_points_out.ndim == 4:
+        cp_out = control_points_out
+        cp_in = control_points_in
+    else:
+        raise ValueError(
+            f"control_points_out must have shape (m,n,3) or (B,m,n,3), got {tuple(control_points_out.shape)}"
+        )
+    if cp_out.shape[-1] != 3:
+        raise ValueError("control points must have last dim = 3.")
+
+    m = int(cp_out.shape[-3]) - 1
+    n = int(cp_out.shape[-2]) - 1
+    device = cp_out.device
+    dtype = cp_out.dtype
+
+    u = torch.linspace(0.0, 1.0, steps=int(num_u), device=device, dtype=dtype)
+    v = torch.linspace(0.0, 1.0, steps=int(num_v), device=device, dtype=dtype)
+    Bu = BezierSurfacePatch.bernstein_basis(m, u)  # (m+1, U)
+    Bv = BezierSurfacePatch.bernstein_basis(n, v)  # (n+1, V)
+
+    # cp_out/cp_in: (B,m+1,n+1,3)
+    w = torch.linspace(0.0, 1.0, steps=int(num_r), device=device, dtype=dtype).view(int(num_r), 1, 1, 1, 1)
+    cp = (1.0 - w) * cp_out.unsqueeze(0) + w * cp_in.unsqueeze(0)  # (R,B,m+1,n+1,3)
+
+    # Evaluate all R surfaces in batch: -> (R,B,U,V,3) then permute -> (B,R,U,V,3)
+    X_rbuvc = torch.einsum("iu,jv,rbijc->rbuvc", Bu, Bv, cp)
+    return X_rbuvc.permute(1, 0, 2, 3, 4).contiguous()
+
+
+def bezier_shell_topo_losses_from_samples(
+    X: torch.Tensor,
+    *,
+    eps: float = 1e-6,
+    delta: float = 0.0,
+) -> Dict[str, torch.Tensor]:
+    """Compute Xing and thickness losses from sampled shell layers.
+
+    Implements the discrete Jacobian determinant penalty:
+        J = d_u · (d_v × d_w)
+        L_xing = mean(ReLU(eps - J))
+
+    and the minimum-thickness penalty:
+        L_thick = mean(ReLU(delta - ||X_{r+1}-X_r||))
+
+    Args:
+        X: (R,U,V,3) or (B,R,U,V,3) samples of interpolated layers.
+        eps: margin for orientation-preserving volume (prevents near-degenerate volumes).
+        delta: desired minimum thickness between adjacent layers (0 disables thickness penalty).
+
+    Returns:
+        Dict with keys: "xing", "thick"
+    """
+    if X.ndim == 4:
+        Xb = X.unsqueeze(0)
+    elif X.ndim == 5:
+        Xb = X
+    else:
+        raise ValueError(f"X must have shape (R,U,V,3) or (B,R,U,V,3), got {tuple(X.shape)}")
+    if Xb.shape[-1] != 3:
+        raise ValueError("X must have last dim = 3.")
+
+    B, R, U, V, _ = Xb.shape
+    device = Xb.device
+    dtype = Xb.dtype
+
+    # Thickness loss (needs R>=2).
+    if R >= 2 and float(delta) > 0.0:
+        d = torch.linalg.norm(Xb[:, 1:, :, :, :] - Xb[:, :-1, :, :, :], dim=-1)  # (B,R-1,U,V)
+        thick = torch.clamp(torch.as_tensor(float(delta), device=device, dtype=dtype) - d, min=0.0).mean()
+    else:
+        thick = torch.zeros((), device=device, dtype=dtype)
+
+    # Xing loss (needs internal indices in r,u,v -> R>=3, U>=3, V>=3).
+    if R >= 3 and U >= 3 and V >= 3:
+        # Internal grid only, matching the paper notation for central differences.
+        du = Xb[:, 1:-1, 2:, 1:-1, :] - Xb[:, 1:-1, :-2, 1:-1, :]  # (B,R-2,U-2,V-2,3)
+        dv = Xb[:, 1:-1, 1:-1, 2:, :] - Xb[:, 1:-1, 1:-1, :-2, :]  # (B,R-2,U-2,V-2,3)
+        dw = Xb[:, 2:, 1:-1, 1:-1, :] - Xb[:, :-2, 1:-1, 1:-1, :]  # (B,R-2,U-2,V-2,3)
+
+        J = torch.sum(du * torch.cross(dv, dw, dim=-1), dim=-1)  # (B,R-2,U-2,V-2)
+        xing = torch.clamp(torch.as_tensor(float(eps), device=device, dtype=dtype) - J, min=0.0).mean()
+    else:
+        xing = torch.zeros((), device=device, dtype=dtype)
+
+    return {"xing": xing, "thick": thick}
 
 def _pairwise_sq_dists(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Squared L2 distances between x (N,3) and y (M,3) -> (N,M)."""

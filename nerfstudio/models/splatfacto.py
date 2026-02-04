@@ -47,8 +47,13 @@ from nerfstudio.utils.misc import torch_compile
 from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
 from nerfstudio.model_components.bezier_surface import (
+    BezierShellPatch,
     BezierPatchGeneratorConfig,
+    PairedBezierSurfacePatch,
+    bezier_shell_topo_losses_from_samples,
+    fit_bezier_control_points_from_grid,
     generate_bezier_patches_from_labeled_points,
+    sample_paired_bezier_surfaces,
 )
 
 
@@ -200,6 +205,14 @@ class SplatfactoModelConfig(ModelConfig):
     built from COLMAP seed points per semantic class.
     """
 
+    bezier_surface_mode: Literal["open", "closed", "both"] = "open"
+    """Which Bezier geometry to use for initialization:
+
+    - "open": use only the outer Bezier surface S_out(u,v) (previous behavior)
+    - "closed": use only the interior/inner part of the shell (S_1..S_{R-1}); requires paired out/in
+    - "both": use the full shell stack (S_0..S_{R-1}); requires paired out/in
+    """
+
     bezier_num_u: int = 20
     """Nu: number of uniform samples along u for each Bezier patch."""
 
@@ -223,6 +236,48 @@ class SplatfactoModelConfig(ModelConfig):
 
     bezier_seed: int = 0
     """Random seed used for patch center sampling."""
+
+    bezier_num_r: int = 5
+    """R: number of interpolated surfaces between S_out and S_in (must be >= 2 when closed mode is enabled)."""
+
+    bezier_closed_thickness: float = 0.02
+    """Thickness (in world units) between S_out and S_in.
+    Implementation detail: we compute a target inner surface by offsetting sampled outer points along the
+    outer surface normal, then fit a Bezier surface (same degree) in least squares.
+    """
+
+    bezier_closed_include_walls: bool = False
+    """If True, also initialize Gaussians on the 4 side walls that close the shell (in addition to intermediate layers)."""
+
+    # --- Bezier shell topology regularization (optional) ---
+    bezier_topo_loss_enabled: bool = False
+    """If True, add Xing/thickness regularization terms on the paired Bezier shell surfaces."""
+
+    bezier_topo_lambda_xing: float = 0.0
+    """Weight for the Xing loss term (orientation-preserving Jacobian determinant margin)."""
+
+    bezier_topo_lambda_thick: float = 0.0
+    """Weight for the minimum-thickness regularizer."""
+
+    bezier_topo_eps: float = 1e-6
+    """Margin epsilon for Xing loss: penalize when J < eps."""
+
+    bezier_topo_delta: float = 0.0
+    """Minimum thickness delta for thickness loss (0 disables)."""
+
+    # --- Bezier shell <-> Gaussian attachment (optional) ---
+    bezier_attach_loss_enabled: bool = False
+    """If True, add an attachment loss tying (a subset of) Gaussian means to points sampled on the Bezier shell.
+
+    Practical note: Splatfacto can densify/prune Gaussians, which changes ordering/identity. This attachment is therefore
+    applied only while the Gaussian set is unchanged (typically early training, before refinement).
+    """
+
+    bezier_attach_lambda: float = 0.0
+    """Weight for the attachment loss."""
+
+    bezier_attach_stop_step: int = 500
+    """Stop applying attachment loss after this training step (to avoid issues once densification/pruning begins)."""
 
     # --- SAM2 semantic init (optional; executed at train startup in VanillaPipeline) ---
     sam2_semantic_init_enabled: bool = False
@@ -344,6 +399,13 @@ class SplatfactoModel(Model):
         num_points: int = 0
 
         bezier_init_done = False
+        # Stored only if bezier_topo_loss_enabled and we successfully built closed shells.
+        topo_cp_out_list: List[torch.Tensor] = []
+        topo_cp_in_list: List[torch.Tensor] = []
+        attach_shell_idx_list: List[torch.Tensor] = []
+        attach_r_idx_list: List[torch.Tensor] = []
+        attach_u_idx_list: List[torch.Tensor] = []
+        attach_v_idx_list: List[torch.Tensor] = []
 
         # Optional: initialize Gaussians from Bezier surface samples (requires semantic labels for seed points).
         meta = self.kwargs.get("metadata", {}) if isinstance(self.kwargs, dict) else {}
@@ -393,26 +455,119 @@ class SplatfactoModel(Model):
                         col = torch.tensor([127.0, 127.0, 127.0], dtype=torch.float32)
 
                     for patch in plist:
-                        X = patch.sample(num_u=Nu, num_v=Nv).float()  # (Nu,Nv,3)
+                        mode = str(getattr(self.config, "bezier_surface_mode", "open"))
+                        if mode not in ("open", "closed", "both"):
+                            raise ValueError(f"Unknown bezier_surface_mode={mode!r}. Expected 'open', 'closed', or 'both'.")
+
+                        if mode in ("closed", "both"):
+                            R_layers = int(self.config.bezier_num_r)
+                            thickness = float(self.config.bezier_closed_thickness)
+                            include_walls = bool(getattr(self.config, "bezier_closed_include_walls", False))
+                            if R_layers < 2:
+                                raise ValueError("bezier_num_r must be >= 2 when bezier_surface_mode is 'closed' or 'both'.")
+
+                            # Outer samples + normals (for constructing an inner target surface).
+                            X_out = patch.sample(num_u=Nu, num_v=Nv).float()  # (Nu,Nv,3)
+                            Xu_f0 = torch.zeros_like(X_out)
+                            Xu_f0[1:-1] = X_out[2:] - X_out[:-2]
+                            Xu_f0[0] = X_out[1] - X_out[0]
+                            Xu_f0[-1] = X_out[-1] - X_out[-2]
+                            tu0 = _safe_normalize(Xu_f0)
+
+                            Xv_f0 = torch.zeros_like(X_out)
+                            Xv_f0[:, 1:-1] = X_out[:, 2:] - X_out[:, :-2]
+                            Xv_f0[:, 0] = X_out[:, 1] - X_out[:, 0]
+                            Xv_f0[:, -1] = X_out[:, -1] - X_out[:, -2]
+                            tv0 = _safe_normalize(Xv_f0)
+
+                            n0 = _safe_normalize(torch.cross(tu0, tv0, dim=-1))
+                            # Construct inner target points and fit a Bezier surface of the same degree.
+                            X_in_tgt = X_out - thickness * n0
+                            cp_out = patch.control_points
+                            deg_u = int(cp_out.shape[0]) - 1
+                            deg_v = int(cp_out.shape[1]) - 1
+                            cp_in = fit_bezier_control_points_from_grid(
+                                X_in_tgt.to(dtype=cp_out.dtype),
+                                m=deg_u,
+                                n=deg_v,
+                            ).to(device=cp_out.device, dtype=cp_out.dtype)
+
+                            shell = BezierShellPatch(cp_out, cp_in)
+                            X_layers = shell.sample_intermediate_layers(num_r=R_layers, num_u=Nu, num_v=Nv).float()  # (R,Nu,Nv,3)
+
+                            # Keep control points around for regularizers (trainable Parameters).
+                            keep_shell_params = bool(getattr(self.config, "bezier_topo_loss_enabled", False)) or bool(
+                                getattr(self.config, "bezier_attach_loss_enabled", False)
+                            )
+                            shell_id = -1
+                            if keep_shell_params:
+                                shell_id = len(topo_cp_out_list)
+                                topo_cp_out_list.append(cp_out.detach().to(dtype=torch.float32))
+                                topo_cp_in_list.append(cp_in.detach().to(dtype=torch.float32))
+
+                            if include_walls:
+                                walls = shell.sample_walls(num_r=R_layers, num_u=Nu, num_v=Nv)
+                                # Turn each wall (R, edge, 3) into a "surface" (R, edge, 1, 3) so it reuses the same codepath.
+                                X_walls = [w.unsqueeze(2) for w in walls.values()]
+                                X = X_layers
+                                extra_wall_surfaces = X_walls
+                            else:
+                                X = X_layers
+                                extra_wall_surfaces = []
+
+                            # Select which layers are used for Gaussian init.
+                            # - "both": keep full stack (includes S_out at r=0)
+                            # - "closed": drop the outermost layer, keep interior+inner (S_1..S_{R-1})
+                            if mode == "closed":
+                                X = X[1:]
+                                if X.shape[0] == 0:
+                                    raise ValueError("bezier_num_r too small: 'closed' mode requires R>=2 to have any layers after dropping S_out.")
+
+                            # Optional: record indices so we can attach these Gaussians back to the (trainable) shell later.
+                            if (
+                                bool(getattr(self.config, "bezier_attach_loss_enabled", False))
+                                and keep_shell_params
+                                and shell_id >= 0
+                            ):
+                                # X is the stack actually used for Gaussian init (after optional drop in "closed" mode).
+                                Rused = int(X.shape[0])
+                                # Indices in the *full* R_layers stack:
+                                if mode == "closed":
+                                    r_full = torch.arange(1, R_layers, dtype=torch.long)  # (R-1,)
+                                else:
+                                    r_full = torch.arange(0, R_layers, dtype=torch.long)  # (R,)
+                                assert int(r_full.shape[0]) == Rused
+                                rr = r_full.view(Rused, 1, 1).expand(Rused, Nu, Nv).reshape(-1)
+                                uu = torch.arange(Nu, dtype=torch.long).view(1, Nu, 1).expand(Rused, Nu, Nv).reshape(-1)
+                                vv = torch.arange(Nv, dtype=torch.long).view(1, 1, Nv).expand(Rused, Nu, Nv).reshape(-1)
+                                ss = torch.full((rr.shape[0],), int(shell_id), dtype=torch.long)
+                                attach_shell_idx_list.append(ss)
+                                attach_r_idx_list.append(rr)
+                                attach_u_idx_list.append(uu)
+                                attach_v_idx_list.append(vv)
+                        else:
+                            # Open mode: just the outer surface.
+                            X = patch.sample(num_u=Nu, num_v=Nv).float().unsqueeze(0)  # (1,Nu,Nv,3)
+                            extra_wall_surfaces = []
 
                         # Tangent directions via finite differences (central; forward/backward at borders).
                         Xu_f = torch.zeros_like(X)
-                        Xu_f[1:-1] = X[2:] - X[:-2]
-                        Xu_f[0] = X[1] - X[0]
-                        Xu_f[-1] = X[-1] - X[-2]
+                        Xu_f[:, 1:-1] = X[:, 2:] - X[:, :-2]
+                        Xu_f[:, 0] = X[:, 1] - X[:, 0]
+                        Xu_f[:, -1] = X[:, -1] - X[:, -2]
                         tu = _safe_normalize(Xu_f)
 
                         Xv_f = torch.zeros_like(X)
-                        Xv_f[:, 1:-1] = X[:, 2:] - X[:, :-2]
-                        Xv_f[:, 0] = X[:, 1] - X[:, 0]
-                        Xv_f[:, -1] = X[:, -1] - X[:, -2]
+                        Xv_f[:, :, 1:-1] = X[:, :, 2:] - X[:, :, :-2]
+                        Xv_f[:, :, 0] = X[:, :, 1] - X[:, :, 0]
+                        Xv_f[:, :, -1] = X[:, :, -1] - X[:, :, -2]
                         tv = _safe_normalize(Xv_f)
 
                         n = _safe_normalize(torch.cross(tu, tv, dim=-1))
                         # Re-orthonormalize tv to be orthogonal to tu and n.
                         tv = _safe_normalize(torch.cross(n, tu, dim=-1))
 
-                        R_frame = torch.stack([tu, tv, n], dim=-1)  # (Nu,Nv,3,3) columns
+                        R_frame = torch.stack([tu, tv, n], dim=-1)  # (R,Nu,Nv,3,3) columns
                         # Use an already-implemented rotmat->quat conversion (COLMAP utils) and then reorder to xyzw
                         # to match `random_quat_tensor()` convention used by gsplat params in this codebase.
                         from nerfstudio.data.utils.colmap_parsing_utils import rotmat2qvec
@@ -425,27 +580,54 @@ class SplatfactoModel(Model):
                         # wxyz -> xyzw
                         q_xyzw = torch.cat([q_wxyz[:, 1:4], q_wxyz[:, 0:1]], dim=-1)
                         q_xyzw = q_xyzw / torch.linalg.norm(q_xyzw, dim=-1, keepdim=True).clamp_min(1e-8)
-                        quats_xyzw = q_xyzw.to(device=R_frame.device).reshape(Nu, Nv, 4)
+                        quats_xyzw = q_xyzw.to(device=R_frame.device).reshape(X.shape[0], Nu, Nv, 4)
 
-                        # Scales from adjacent sample distances.
-                        du = X[1:] - X[:-1]  # (Nu-1,Nv,3)
-                        dv = X[:, 1:] - X[:, :-1]  # (Nu,Nv-1,3)
-                        sigma_u = torch.zeros((Nu, Nv), dtype=torch.float32)
-                        sigma_v = torch.zeros((Nu, Nv), dtype=torch.float32)
-                        sigma_u[:-1] = torch.linalg.norm(du, dim=-1) / rho
-                        sigma_u[-1] = sigma_u[-2]
-                        sigma_v[:, :-1] = torch.linalg.norm(dv, dim=-1) / rho
-                        sigma_v[:, -1] = sigma_v[:, -2]
-                        sigma_n = torch.full((Nu, Nv), float(alpha / rho), dtype=torch.float32)
+                        # Scales from adjacent sample distances (same scheme as open-surface init).
+                        du = X[:, 1:] - X[:, :-1]  # (R,Nu-1,Nv,3)
+                        dv = X[:, :, 1:] - X[:, :, :-1]  # (R,Nu,Nv-1,3)
+                        sigma_u = torch.zeros((X.shape[0], Nu, Nv), dtype=torch.float32)
+                        sigma_v = torch.zeros((X.shape[0], Nu, Nv), dtype=torch.float32)
+                        sigma_u[:, :-1] = torch.linalg.norm(du, dim=-1) / rho
+                        sigma_u[:, -1] = sigma_u[:, -2]
+                        sigma_v[:, :, :-1] = torch.linalg.norm(dv, dim=-1) / rho
+                        sigma_v[:, :, -1] = sigma_v[:, :, -2]
+                        sigma_n = torch.full((X.shape[0], Nu, Nv), float(alpha / rho), dtype=torch.float32)
 
                         scales_lin = torch.stack([sigma_u, sigma_v, sigma_n], dim=-1).clamp_min(1e-6)
                         scales_log = torch.log(scales_lin)
 
+                        Rcount = int(X.shape[0])
                         means_list.append(X.reshape(-1, 3))
                         scales_list.append(scales_log.reshape(-1, 3))
                         quats_list.append(quats_xyzw.reshape(-1, 4))
-                        colors_list.append(col[None, :].repeat(Nu * Nv, 1))
-                        sem_list.append(torch.full((Nu * Nv,), int(lab), dtype=torch.int64))
+                        colors_list.append(col[None, :].repeat(Rcount * Nu * Nv, 1))
+                        sem_list.append(torch.full((Rcount * Nu * Nv,), int(lab), dtype=torch.int64))
+
+                        # Optionally add side walls (each treated as a thin surface, like open init).
+                        for Xw in extra_wall_surfaces:
+                            # Xw: (R, edge, 1, 3) where "u" dimension is edge samples and "v" has size 1.
+                            Rw, Uw, Vw = int(Xw.shape[0]), int(Xw.shape[1]), int(Xw.shape[2])
+                            assert Vw == 1
+                            # Tangents: along edge direction only; create a dummy second tangent axis.
+                            duw = Xw[:, 1:] - Xw[:, :-1]  # (R,Uw-1,1,3)
+                            sigma_u_w = torch.zeros((Rw, Uw, 1), dtype=torch.float32)
+                            sigma_u_w[:, :-1] = torch.linalg.norm(duw, dim=-1) / rho
+                            sigma_u_w[:, -1] = sigma_u_w[:, -2]
+                            sigma_v_w = torch.full((Rw, Uw, 1), 1e-6, dtype=torch.float32)
+                            sigma_n_w = torch.full((Rw, Uw, 1), float(alpha / rho), dtype=torch.float32)
+                            scales_log_w = torch.log(torch.stack([sigma_u_w, sigma_v_w, sigma_n_w], dim=-1).clamp_min(1e-6))
+
+                            means_list.append(Xw.reshape(-1, 3))
+                            scales_list.append(scales_log_w.reshape(-1, 3))
+                            # Walls: simplest stable choice is identity quats (aligned to world axes).
+                            # (This path is optional and can be improved later by building a proper local frame.)
+                            quats_list.append(
+                                torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=Xw.device)[None, :].repeat(
+                                    Rw * Uw * 1, 1
+                                )
+                            )
+                            colors_list.append(col[None, :].repeat(Rw * Uw * 1, 1))
+                            sem_list.append(torch.full((Rw * Uw * 1,), int(lab), dtype=torch.int64))
 
                 if len(means_list) > 0:
                     means0 = torch.cat(means_list, dim=0)
@@ -477,6 +659,35 @@ class SplatfactoModel(Model):
                     CONSOLE.log("[yellow]Bezier init enabled, but no patches were generated; falling back.[/yellow]")
             except Exception as e:
                 CONSOLE.log(f"[yellow]Bezier init failed, falling back to standard seed init: {e}[/yellow]")
+
+        # If requested and available, register trainable Bezier shell control points for topology regularization.
+        # Note: this is independent of the Gaussian parameters; it regularizes the shell itself.
+        if bool(getattr(self.config, "bezier_topo_loss_enabled", False)) and len(topo_cp_out_list) > 0:
+            try:
+                self.bezier_shell_cp_out = torch.nn.Parameter(torch.stack(topo_cp_out_list, dim=0))  # (S,4,4,3)
+                self.bezier_shell_cp_in = torch.nn.Parameter(torch.stack(topo_cp_in_list, dim=0))  # (S,4,4,3)
+            except Exception as e:
+                CONSOLE.log(f"[yellow]Warning: failed to register Bezier topology params (skipping topo loss): {e}[/yellow]")
+
+        # Optional: attachment indices for Gaussians initialized from closed shells.
+        if bool(getattr(self.config, "bezier_attach_loss_enabled", False)) and len(attach_shell_idx_list) > 0:
+            try:
+                self.register_buffer(
+                    "bezier_attach_shell_idx", torch.cat(attach_shell_idx_list, dim=0).to(dtype=torch.long), persistent=True
+                )
+                self.register_buffer(
+                    "bezier_attach_r_idx", torch.cat(attach_r_idx_list, dim=0).to(dtype=torch.long), persistent=True
+                )
+                self.register_buffer(
+                    "bezier_attach_u_idx", torch.cat(attach_u_idx_list, dim=0).to(dtype=torch.long), persistent=True
+                )
+                self.register_buffer(
+                    "bezier_attach_v_idx", torch.cat(attach_v_idx_list, dim=0).to(dtype=torch.long), persistent=True
+                )
+                # Used to guard against densification/pruning changing the Gaussian set.
+                self._bezier_attach_num_points_init = int(torch.cat(attach_shell_idx_list, dim=0).shape[0])
+            except Exception as e:
+                CONSOLE.log(f"[yellow]Warning: failed to register Bezier attachment indices (skipping attach loss): {e}[/yellow]")
 
         if not bezier_init_done:
             if self.seed_points is not None and not self.config.random_init:
@@ -1284,6 +1495,66 @@ class SplatfactoModel(Model):
             self.camera_optimizer.get_loss_dict(loss_dict)
             if self.config.use_bilateral_grid:
                 loss_dict["tv_loss"] = 10 * total_variation_loss(self.bil_grids.grids)
+
+            # Optional: Bezier shell topology losses (Xing + min thickness).
+            if bool(getattr(self.config, "bezier_topo_loss_enabled", False)) and hasattr(self, "bezier_shell_cp_out"):
+                cp_out = getattr(self, "bezier_shell_cp_out")
+                cp_in = getattr(self, "bezier_shell_cp_in")
+                try:
+                    X = sample_paired_bezier_surfaces(
+                        cp_out,
+                        cp_in,
+                        num_r=int(getattr(self.config, "bezier_num_r", 5)),
+                        num_u=int(getattr(self.config, "bezier_num_u", 20)),
+                        num_v=int(getattr(self.config, "bezier_num_v", 20)),
+                    )  # (S,R,U,V,3)
+                    topo = bezier_shell_topo_losses_from_samples(
+                        X,
+                        eps=float(getattr(self.config, "bezier_topo_eps", 1e-6)),
+                        delta=float(getattr(self.config, "bezier_topo_delta", 0.0)),
+                    )
+                    lam_x = float(getattr(self.config, "bezier_topo_lambda_xing", 0.0))
+                    lam_t = float(getattr(self.config, "bezier_topo_lambda_thick", 0.0))
+                    if lam_x != 0.0:
+                        loss_dict["bezier_xing_loss"] = topo["xing"] * lam_x
+                    if lam_t != 0.0:
+                        loss_dict["bezier_thick_loss"] = topo["thick"] * lam_t
+                    if lam_x != 0.0 or lam_t != 0.0:
+                        loss_dict["bezier_topo_loss"] = (topo["xing"] * lam_x) + (topo["thick"] * lam_t)
+                except Exception as e:
+                    # Keep training stable if something goes wrong.
+                    CONSOLE.log(f"[yellow]Warning: Bezier topo loss failed (skipping): {e}[/yellow]")
+
+            # Optional: attach (a subset of) Gaussian means to the Bezier shell points they were initialized from.
+            if (
+                bool(getattr(self.config, "bezier_attach_loss_enabled", False))
+                and hasattr(self, "bezier_shell_cp_out")
+                and hasattr(self, "bezier_attach_shell_idx")
+                and float(getattr(self.config, "bezier_attach_lambda", 0.0)) != 0.0
+            ):
+                try:
+                    stop_step = int(getattr(self.config, "bezier_attach_stop_step", 0))
+                    # Guard: only apply early, and only if the Gaussian set hasn't changed size.
+                    if stop_step > 0 and int(self.step) <= stop_step:
+                        n_init = int(getattr(self, "_bezier_attach_num_points_init", 0))
+                        if n_init > 0 and int(self.num_points) == n_init:
+                            Xs = sample_paired_bezier_surfaces(
+                                getattr(self, "bezier_shell_cp_out"),
+                                getattr(self, "bezier_shell_cp_in"),
+                                num_r=int(getattr(self.config, "bezier_num_r", 5)),
+                                num_u=int(getattr(self.config, "bezier_num_u", 20)),
+                                num_v=int(getattr(self.config, "bezier_num_v", 20)),
+                            )  # (S,R,U,V,3)
+                            ss = getattr(self, "bezier_attach_shell_idx")
+                            rr = getattr(self, "bezier_attach_r_idx")
+                            uu = getattr(self, "bezier_attach_u_idx")
+                            vv = getattr(self, "bezier_attach_v_idx")
+                            target = Xs[ss, rr, uu, vv]  # (N,3)
+                            means = self.gauss_params["means"]  # (N,3) at this stage
+                            attach = ((means - target) ** 2).sum(dim=-1).mean()
+                            loss_dict["bezier_attach_loss"] = float(getattr(self.config, "bezier_attach_lambda", 0.0)) * attach
+                except Exception as e:
+                    CONSOLE.log(f"[yellow]Warning: Bezier attach loss failed (skipping): {e}[/yellow]")
 
         return loss_dict
 
