@@ -350,6 +350,41 @@ class SplatfactoModelConfig(ModelConfig):
     If no prompts are provided, prompt-free mode assigns labels sam2_label_id, sam2_label_id+1, ... per discovered object.
     """
 
+    # Text-prompt mode (GroundingDINO + SAM2). If sam2_text_prompts is non-empty, VanillaPipeline prefers this path
+    # and will (optionally) run segmentation across all training images and vote 3D point labels.
+    sam2_text_prompts: Optional[List[str]] = None
+    """Optional list of text prompts. Example: ["car", "person"]. Each prompt gets label id sam2_label_id+i."""
+
+    sam2_groundingdino_config_path: Optional[str] = None
+    """Path to GroundingDINO config .py file."""
+
+    sam2_groundingdino_checkpoint_path: Optional[str] = None
+    """Path to GroundingDINO checkpoint .pth file."""
+
+    sam2_groundingdino_box_threshold: float = 0.30
+    """GroundingDINO box threshold."""
+
+    sam2_groundingdino_text_threshold: float = 0.25
+    """GroundingDINO text threshold."""
+
+    sam2_groundingdino_max_boxes_per_prompt: int = 8
+    """Max boxes per prompt per image (runtime bound)."""
+
+    sam2_segment_all_train_images: bool = True
+    """If True (recommended), run text-prompt segmentation on all training images and vote 3D point labels."""
+
+    sam2_segment_image_indices: Optional[List[int]] = None
+    """Optional explicit list of dataset image indices to segment (overrides sam2_segment_all_train_images)."""
+
+    sam2_segmentation_output_dir: str = "data/grounded_sam2"
+    """Directory to save per-image segmentation outputs (labelmap + overlay + metadata)."""
+
+    sam2_save_labelmap_npy: bool = True
+    """If True, save labelmap_{idx}.npy with exact integer labels per pixel."""
+
+    sam2_save_per_prompt_masks: bool = False
+    """If True, save per-prompt binary masks as PNG (can be large)."""
+
     # Prompts (optional). If both point prompts and box are None, we run prompt-free "segment everything".
     sam2_point_coords: Optional[List[Tuple[float, float]]] = None
     """List of (x,y) point prompts in pixel coordinates (after any dataparser downscale)."""
