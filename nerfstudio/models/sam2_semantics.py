@@ -355,13 +355,25 @@ class GroundingDINOPredictor:
             outputs = self._hf_model(**inputs)
             # Processor API (as in model card):
             # post_process_grounded_object_detection(outputs, input_ids, box_threshold, text_threshold, target_sizes)
-            results = self._hf_processor.post_process_grounded_object_detection(
-                outputs,
-                inputs["input_ids"] if isinstance(inputs, dict) else inputs.input_ids,
-                box_threshold=float(box_threshold),
-                text_threshold=float(text_threshold),
-                target_sizes=[(H, W)],
-            )
+            input_ids = inputs["input_ids"] if isinstance(inputs, dict) else inputs.input_ids
+            # Try both signature variants (newer transformers uses keyword args, older might use positional).
+            try:
+                results = self._hf_processor.post_process_grounded_object_detection(
+                    outputs,
+                    input_ids,
+                    box_threshold=float(box_threshold),
+                    text_threshold=float(text_threshold),
+                    target_sizes=[(H, W)],
+                )
+            except TypeError:
+                # Fallback: try positional args (older transformers versions).
+                results = self._hf_processor.post_process_grounded_object_detection(
+                    outputs,
+                    input_ids,
+                    float(box_threshold),
+                    float(text_threshold),
+                    [(H, W)],
+                )
             r0 = results[0] if isinstance(results, (list, tuple)) and len(results) > 0 else {}
             boxes = r0.get("boxes", None)
             scores = r0.get("scores", None)
