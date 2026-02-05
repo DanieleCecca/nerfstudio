@@ -290,6 +290,14 @@ class VanillaPipeline(Pipeline):
                         model_id=str(getattr(config.model, "sam2_model_id", "facebook/sam2-hiera-large")),
                         label_id=int(getattr(config.model, "sam2_label_id", 1)),
                         text_prompts=list(text_prompts),
+                        groundingdino_model_id=str(
+                            getattr(config.model, "sam2_groundingdino_model_id", "IDEA-Research/grounding-dino-base")
+                        ),
+                        groundingdino_revision=getattr(config.model, "sam2_groundingdino_revision", None),
+                        groundingdino_config_filename=getattr(config.model, "sam2_groundingdino_config_filename", None),
+                        groundingdino_checkpoint_filename=getattr(
+                            config.model, "sam2_groundingdino_checkpoint_filename", None
+                        ),
                         groundingdino_config_path=getattr(config.model, "sam2_groundingdino_config_path", None),
                         groundingdino_checkpoint_path=getattr(config.model, "sam2_groundingdino_checkpoint_path", None),
                         box_threshold=float(getattr(config.model, "sam2_groundingdino_box_threshold", 0.30)),

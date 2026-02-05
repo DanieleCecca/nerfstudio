@@ -76,11 +76,23 @@ class GroundedSAM2SemanticInitConfig(SAM2SemanticInitConfig):
     """List of text prompts (e.g., ["car", "person"]). Each prompt gets a stable label id."""
 
     # GroundingDINO model weights (required if text_prompts is non-empty).
+    groundingdino_model_id: str = "IDEA-Research/grounding-dino-base"
+    """HuggingFace Hub repo id for GroundingDINO (auto-download config+checkpoint)."""
+
+    groundingdino_revision: Optional[str] = None
+    """Optional HuggingFace revision (branch/tag/commit)."""
+
+    groundingdino_config_filename: Optional[str] = None
+    """Optional override: exact config filename inside the HF repo."""
+
+    groundingdino_checkpoint_filename: Optional[str] = None
+    """Optional override: exact checkpoint filename inside the HF repo."""
+
     groundingdino_config_path: Optional[str] = None
-    """Path to GroundingDINO config .py file."""
+    """(Legacy) Path to GroundingDINO config .py file."""
 
     groundingdino_checkpoint_path: Optional[str] = None
-    """Path to GroundingDINO checkpoint .pth file."""
+    """(Legacy) Path to GroundingDINO checkpoint .pth file."""
 
     groundingdino_device: Optional[str] = None
     """Device for GroundingDINO inference (defaults to config.device or cuda if available)."""
@@ -209,9 +221,29 @@ class SAM2MaskPredictor:
 
 
 class GroundingDINOPredictor:
-    """Lazy-loaded GroundingDINO predictor for text-to-box."""
+    """Lazy-loaded GroundingDINO predictor for text-to-box.
 
-    def __init__(self, config_path: str, checkpoint_path: str, device: Optional[str] = None):
+    We support two loading modes:
+    - HF Hub mode (preferred): provide `model_id` (e.g. "IDEA-Research/grounding-dino-base") and we auto-download
+      a config .py and checkpoint .pth from the Hub.
+    - Explicit paths mode (legacy): provide `config_path` + `checkpoint_path`.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_id: Optional[str] = None,
+        revision: Optional[str] = None,
+        config_filename: Optional[str] = None,
+        checkpoint_filename: Optional[str] = None,
+        config_path: Optional[str] = None,
+        checkpoint_path: Optional[str] = None,
+        device: Optional[str] = None,
+    ):
+        self.model_id = model_id
+        self.revision = revision
+        self.config_filename = config_filename
+        self.checkpoint_filename = checkpoint_filename
         self.config_path = config_path
         self.checkpoint_path = checkpoint_path
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -230,12 +262,67 @@ class GroundingDINOPredictor:
                 "GroundingDINO is not installed or import failed.\n"
                 "Install one option with:\n"
                 "  pip install groundingdino\n"
-                "Then download GroundingDINO config+checkpoint and set:\n"
-                "  sam2_groundingdino_config_path, sam2_groundingdino_checkpoint_path\n"
+                "Then either:\n"
+                "- (recommended) set sam2_groundingdino_model_id (downloads from HuggingFace Hub), or\n"
+                "- set sam2_groundingdino_config_path + sam2_groundingdino_checkpoint_path\n"
                 f"Import error: {e}"
             ) from e
 
-        self._model = load_model(self.config_path, self.checkpoint_path, device=self.device)
+        cfg_path = self.config_path
+        ckpt_path = self.checkpoint_path
+
+        if (cfg_path is None or ckpt_path is None) and self.model_id is not None:
+            # Auto-download config+checkpoint from HuggingFace Hub.
+            try:
+                from huggingface_hub import HfApi, hf_hub_download  # type: ignore
+            except Exception as e:  # pragma: no cover
+                raise RuntimeError(
+                    "huggingface_hub is required to download GroundingDINO weights automatically.\n"
+                    "Install it with:\n"
+                    "  pip install huggingface_hub\n"
+                    f"Import error: {e}"
+                ) from e
+
+            api = HfApi()
+            files = api.list_repo_files(repo_id=str(self.model_id), revision=self.revision)
+
+            def _pick_file(candidates: List[str], prefer_substrings: List[str]) -> Optional[str]:
+                if len(candidates) == 0:
+                    return None
+                # Prefer files containing certain substrings (case-insensitive).
+                lower = [c.lower() for c in candidates]
+                for sub in prefer_substrings:
+                    sub_l = sub.lower()
+                    for c, cl in zip(candidates, lower):
+                        if sub_l in cl:
+                            return c
+                return candidates[0]
+
+            cfg_file = self.config_filename
+            if cfg_file is None:
+                py_files = [f for f in files if f.lower().endswith(".py")]
+                # Base model is typically SwinB; keep heuristic but fallback safely.
+                cfg_file = _pick_file(py_files, prefer_substrings=["swinb", "cfg", "config", "groundingdino"])
+            ckpt_file = self.checkpoint_filename
+            if ckpt_file is None:
+                ckpt_files = [f for f in files if f.lower().endswith((".pth", ".pt", ".bin"))]
+                ckpt_file = _pick_file(ckpt_files, prefer_substrings=["swinb", "base", "groundingdino", "model"])
+
+            if cfg_file is None or ckpt_file is None:
+                raise RuntimeError(
+                    f"Could not find a config/checkpoint in HuggingFace repo {self.model_id!r}. "
+                    "Set config_filename/checkpoint_filename explicitly, or provide explicit paths."
+                )
+
+            cfg_path = hf_hub_download(repo_id=str(self.model_id), filename=str(cfg_file), revision=self.revision)
+            ckpt_path = hf_hub_download(repo_id=str(self.model_id), filename=str(ckpt_file), revision=self.revision)
+
+        if cfg_path is None or ckpt_path is None:
+            raise RuntimeError(
+                "GroundingDINO model paths are not set. Provide model_id (recommended) or config_path+checkpoint_path."
+            )
+
+        self._model = load_model(str(cfg_path), str(ckpt_path), device=self.device)
         self._predict_fn = predict
 
     @torch.no_grad()
@@ -552,10 +639,13 @@ def compute_seed_semantic_labels_from_grounded_sam2_all_images(
 
     if len(config.text_prompts) == 0:
         raise ValueError("config.text_prompts is empty. Provide at least one text prompt.")
-    if not config.groundingdino_config_path or not config.groundingdino_checkpoint_path:
+    has_legacy_paths = bool(config.groundingdino_config_path) and bool(config.groundingdino_checkpoint_path)
+    has_hf_id = bool(getattr(config, "groundingdino_model_id", None))
+    if not has_legacy_paths and not has_hf_id:
         raise ValueError(
-            "GroundedSAM2 requires GroundingDINO weights. Set config.groundingdino_config_path and "
-            "config.groundingdino_checkpoint_path."
+            "GroundedSAM2 requires GroundingDINO weights. Either set:\n"
+            "- config.groundingdino_model_id (recommended; downloads from HuggingFace Hub), or\n"
+            "- config.groundingdino_config_path + config.groundingdino_checkpoint_path (legacy)."
         )
 
     num_images = int(colmap_im_ids.shape[0])
@@ -573,8 +663,14 @@ def compute_seed_semantic_labels_from_grounded_sam2_all_images(
 
     # Init predictors once.
     dino = GroundingDINOPredictor(
-        config_path=str(config.groundingdino_config_path),
-        checkpoint_path=str(config.groundingdino_checkpoint_path),
+        model_id=str(getattr(config, "groundingdino_model_id", "IDEA-Research/grounding-dino-base"))
+        if not has_legacy_paths
+        else None,
+        revision=getattr(config, "groundingdino_revision", None),
+        config_filename=getattr(config, "groundingdino_config_filename", None),
+        checkpoint_filename=getattr(config, "groundingdino_checkpoint_filename", None),
+        config_path=str(config.groundingdino_config_path) if config.groundingdino_config_path else None,
+        checkpoint_path=str(config.groundingdino_checkpoint_path) if config.groundingdino_checkpoint_path else None,
         device=(config.groundingdino_device or config.device),
     )
     sam2 = SAM2MaskPredictor(model_id=str(config.model_id), device=config.device)

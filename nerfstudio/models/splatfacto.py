@@ -355,11 +355,24 @@ class SplatfactoModelConfig(ModelConfig):
     sam2_text_prompts: Optional[List[str]] = None
     """Optional list of text prompts. Example: ["car", "person"]. Each prompt gets label id sam2_label_id+i."""
 
+    sam2_groundingdino_model_id: str = "IDEA-Research/grounding-dino-base"
+    """HuggingFace Hub repo id for GroundingDINO (auto-download config+checkpoint)."""
+
+    sam2_groundingdino_revision: Optional[str] = None
+    """Optional HuggingFace revision (branch/tag/commit)."""
+
+    sam2_groundingdino_config_filename: Optional[str] = None
+    """Optional override: exact config filename inside the HF repo (auto-picked if None)."""
+
+    sam2_groundingdino_checkpoint_filename: Optional[str] = None
+    """Optional override: exact checkpoint filename inside the HF repo (auto-picked if None)."""
+
+    # Legacy explicit-path mode (still supported, but you shouldn't need it).
     sam2_groundingdino_config_path: Optional[str] = None
-    """Path to GroundingDINO config .py file."""
+    """(Legacy) Path to GroundingDINO config .py file."""
 
     sam2_groundingdino_checkpoint_path: Optional[str] = None
-    """Path to GroundingDINO checkpoint .pth file."""
+    """(Legacy) Path to GroundingDINO checkpoint .pth file."""
 
     sam2_groundingdino_box_threshold: float = 0.30
     """GroundingDINO box threshold."""
