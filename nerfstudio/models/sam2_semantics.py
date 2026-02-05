@@ -224,9 +224,9 @@ class GroundingDINOPredictor:
     """Lazy-loaded GroundingDINO predictor for text-to-box.
 
     We support two loading modes:
-    - HF Hub mode (preferred): provide `model_id` (e.g. "IDEA-Research/grounding-dino-base") and we auto-download
-      a config .py and checkpoint .pth from the Hub.
-    - Explicit paths mode (legacy): provide `config_path` + `checkpoint_path`.
+    - Transformers/HF mode (preferred): provide `model_id` (e.g. "IDEA-Research/grounding-dino-base") and load via
+      `transformers` exactly like the model card (AutoProcessor + AutoModelForZeroShotObjectDetection).
+    - Explicit paths mode (legacy): provide `config_path` + `checkpoint_path` and load via the `groundingdino` package.
     """
 
     def __init__(
@@ -234,6 +234,7 @@ class GroundingDINOPredictor:
         *,
         model_id: Optional[str] = None,
         revision: Optional[str] = None,
+        # Note: kept for backward compatibility with earlier HF-hub auto-download attempts; not used in Transformers mode.
         config_filename: Optional[str] = None,
         checkpoint_filename: Optional[str] = None,
         config_path: Optional[str] = None,
@@ -247,83 +248,61 @@ class GroundingDINOPredictor:
         self.config_path = config_path
         self.checkpoint_path = checkpoint_path
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        self._mode: Optional[str] = None  # "transformers" | "groundingdino"
+        self._hf_processor = None
+        self._hf_model = None
+
         self._model = None
         self._predict_fn = None
 
     def _lazy_load(self) -> None:
-        if self._model is not None:
+        if self._mode is not None:
             return
+
+        # Preferred: Transformers/HF mode (matches the model card for IDEA-Research/grounding-dino-base).
+        # We use this when model_id is provided and explicit legacy paths are not provided.
+        if self.model_id is not None and not (self.config_path and self.checkpoint_path):
+            try:
+                from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor  # type: ignore
+
+                self._hf_processor = AutoProcessor.from_pretrained(str(self.model_id), revision=self.revision)
+                self._hf_model = (
+                    AutoModelForZeroShotObjectDetection.from_pretrained(str(self.model_id), revision=self.revision)
+                    .to(self.device)
+                    .eval()
+                )
+                self._mode = "transformers"
+                return
+            except Exception:
+                # Fall back to legacy mode below (actionable error is raised there if it also fails).
+                self._hf_processor = None
+                self._hf_model = None
+
+        # Legacy: groundingdino package mode (requires explicit paths).
         try:
             # Common API used in notebooks:
             # from groundingdino.util.inference import load_model, predict
             from groundingdino.util.inference import load_model, predict  # type: ignore
         except Exception as e:  # pragma: no cover
             raise RuntimeError(
-                "GroundingDINO is not installed or import failed.\n"
-                "Install one option with:\n"
-                "  pip install groundingdino\n"
-                "Then either:\n"
-                "- (recommended) set sam2_groundingdino_model_id (downloads from HuggingFace Hub), or\n"
-                "- set sam2_groundingdino_config_path + sam2_groundingdino_checkpoint_path\n"
+                "GroundingDINO loading failed.\n"
+                "Recommended (HF): use transformers + set sam2_groundingdino_model_id (default: IDEA-Research/grounding-dino-base).\n"
+                "Legacy: pip install groundingdino and set sam2_groundingdino_config_path + sam2_groundingdino_checkpoint_path.\n"
                 f"Import error: {e}"
             ) from e
 
-        cfg_path = self.config_path
-        ckpt_path = self.checkpoint_path
-
-        if (cfg_path is None or ckpt_path is None) and self.model_id is not None:
-            # Auto-download config+checkpoint from HuggingFace Hub.
-            try:
-                from huggingface_hub import HfApi, hf_hub_download  # type: ignore
-            except Exception as e:  # pragma: no cover
-                raise RuntimeError(
-                    "huggingface_hub is required to download GroundingDINO weights automatically.\n"
-                    "Install it with:\n"
-                    "  pip install huggingface_hub\n"
-                    f"Import error: {e}"
-                ) from e
-
-            api = HfApi()
-            files = api.list_repo_files(repo_id=str(self.model_id), revision=self.revision)
-
-            def _pick_file(candidates: List[str], prefer_substrings: List[str]) -> Optional[str]:
-                if len(candidates) == 0:
-                    return None
-                # Prefer files containing certain substrings (case-insensitive).
-                lower = [c.lower() for c in candidates]
-                for sub in prefer_substrings:
-                    sub_l = sub.lower()
-                    for c, cl in zip(candidates, lower):
-                        if sub_l in cl:
-                            return c
-                return candidates[0]
-
-            cfg_file = self.config_filename
-            if cfg_file is None:
-                py_files = [f for f in files if f.lower().endswith(".py")]
-                # Base model is typically SwinB; keep heuristic but fallback safely.
-                cfg_file = _pick_file(py_files, prefer_substrings=["swinb", "cfg", "config", "groundingdino"])
-            ckpt_file = self.checkpoint_filename
-            if ckpt_file is None:
-                ckpt_files = [f for f in files if f.lower().endswith((".pth", ".pt", ".bin"))]
-                ckpt_file = _pick_file(ckpt_files, prefer_substrings=["swinb", "base", "groundingdino", "model"])
-
-            if cfg_file is None or ckpt_file is None:
-                raise RuntimeError(
-                    f"Could not find a config/checkpoint in HuggingFace repo {self.model_id!r}. "
-                    "Set config_filename/checkpoint_filename explicitly, or provide explicit paths."
-                )
-
-            cfg_path = hf_hub_download(repo_id=str(self.model_id), filename=str(cfg_file), revision=self.revision)
-            ckpt_path = hf_hub_download(repo_id=str(self.model_id), filename=str(ckpt_file), revision=self.revision)
-
-        if cfg_path is None or ckpt_path is None:
+        if not (self.config_path and self.checkpoint_path):
             raise RuntimeError(
-                "GroundingDINO model paths are not set. Provide model_id (recommended) or config_path+checkpoint_path."
+                "GroundingDINO legacy mode requires explicit paths (config_path + checkpoint_path).\n"
+                "If you are using the HuggingFace model 'IDEA-Research/grounding-dino-base', you should use Transformers mode:\n"
+                "  pip install -U transformers\n"
+                "and set sam2_groundingdino_model_id (no config/checkpoint files needed)."
             )
 
-        self._model = load_model(str(cfg_path), str(ckpt_path), device=self.device)
+        self._model = load_model(str(self.config_path), str(self.checkpoint_path), device=self.device)
         self._predict_fn = predict
+        self._mode = "groundingdino"
 
     @torch.no_grad()
     def predict_boxes_xyxy(
@@ -343,6 +322,84 @@ class GroundingDINOPredictor:
             phrases: list[str] length K (best-effort; may be empty strings depending on library version)
         """
         self._lazy_load()
+        assert self._mode is not None
+
+        if self._mode == "transformers":
+            if image_uint8.ndim != 3 or image_uint8.shape[2] not in (3, 4):
+                raise ValueError(f"Expected image_uint8 to have shape (H,W,3/4), got {image_uint8.shape}")
+            img = image_uint8[:, :, :3] if image_uint8.shape[2] == 4 else image_uint8
+            if img.dtype != np.uint8:
+                img = img.astype(np.uint8, copy=False)
+
+            try:
+                from PIL import Image
+            except Exception as e:  # pragma: no cover
+                raise RuntimeError(f"PIL is required for GroundingDINO Transformers mode: {e}") from e
+
+            image = Image.fromarray(img)
+            H, W = int(img.shape[0]), int(img.shape[1])
+
+            # Model card requirement: lowercase + trailing dot.
+            text = str(caption).strip().lower()
+            if not text.endswith("."):
+                text = text + "."
+
+            assert self._hf_processor is not None and self._hf_model is not None
+            inputs = self._hf_processor(images=image, text=text, return_tensors="pt")
+            # BatchEncoding supports .to(device)
+            try:
+                inputs = inputs.to(self.device)
+            except Exception:
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+            outputs = self._hf_model(**inputs)
+            # Processor API (as in model card):
+            # post_process_grounded_object_detection(outputs, input_ids, box_threshold, text_threshold, target_sizes)
+            results = self._hf_processor.post_process_grounded_object_detection(
+                outputs,
+                inputs["input_ids"] if isinstance(inputs, dict) else inputs.input_ids,
+                box_threshold=float(box_threshold),
+                text_threshold=float(text_threshold),
+                target_sizes=[(H, W)],
+            )
+            r0 = results[0] if isinstance(results, (list, tuple)) and len(results) > 0 else {}
+            boxes = r0.get("boxes", None)
+            scores = r0.get("scores", None)
+            labels = r0.get("labels", None)
+
+            if boxes is None or scores is None:
+                return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32), []
+
+            boxes_t = torch.as_tensor(boxes).detach().cpu().to(dtype=torch.float32)
+            scores_t = torch.as_tensor(scores).detach().cpu().to(dtype=torch.float32).flatten()
+
+            if boxes_t.numel() == 0:
+                return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32), []
+
+            order = torch.argsort(scores_t, descending=True)
+            if int(max_boxes) > 0:
+                order = order[: int(max_boxes)]
+            boxes_t = boxes_t[order]
+            scores_t = scores_t[order]
+
+            # Best-effort phrases.
+            phrases_out: List[str] = []
+            if labels is None:
+                phrases_out = ["" for _ in range(int(order.numel()))]
+            else:
+                try:
+                    lab_list = list(labels)
+                    phrases_out = [str(lab_list[int(i)]) for i in order.tolist()]
+                except Exception:
+                    phrases_out = ["" for _ in range(int(order.numel()))]
+
+            # Clip to bounds.
+            boxes_t[:, 0::2] = boxes_t[:, 0::2].clamp(0.0, float(W - 1))
+            boxes_t[:, 1::2] = boxes_t[:, 1::2].clamp(0.0, float(H - 1))
+
+            return boxes_t.numpy().astype(np.float32), scores_t.numpy().astype(np.float32), phrases_out
+
+        # Legacy groundingdino branch (existing behavior).
         assert self._model is not None and self._predict_fn is not None
 
         if image_uint8.ndim != 3 or image_uint8.shape[2] not in (3, 4):
