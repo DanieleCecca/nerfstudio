@@ -1896,16 +1896,38 @@ class SplatfactoModel(Model):
         gt_img = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
         pred_img = outputs["rgb"]
 
-        # Set masked part of both ground-truth and rendered image to black.
-        # This is a little bit sketchy for the SSIM loss.
-        mask = None
+        # Optional segmentation mask: enable loss only on the object-of-interest pixels.
+        # We apply the mask pixel-wise and normalize the reduction by the number of active pixels
+        # (so the loss magnitude does not depend on object size).
+        mask: Optional[torch.Tensor] = None
+        gt_img_unmasked = gt_img
+        pred_img_unmasked = pred_img
         if "mask" in batch:
             # batch["mask"] : [H, W, 1]
-            mask = self._downscale_if_required(batch["mask"])
-            mask = mask.to(self.device)
-            assert mask.shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
+            mask_t: torch.Tensor = self._downscale_if_required(batch["mask"]).to(self.device)
+            if mask_t.ndim == 2:
+                mask_t = mask_t[:, :, None]
+            # Ensure float mask in [0,1] and shape [H,W,1]
+            mask_t = mask_t.to(dtype=gt_img.dtype)
+            mask_t = torch.clamp(mask_t, 0.0, 1.0)
+            assert mask_t.shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
+            assert mask_t.shape[-1] == 1
+            mask = mask_t
+
+            # For SSIM (which is unweighted), we still multiply images pixel-wise so only masked pixels contribute.
             gt_img = gt_img * mask
             pred_img = pred_img * mask
+
+        def _masked_mean(x: torch.Tensor, mask_hw1: Optional[torch.Tensor]) -> torch.Tensor:
+            """Compute mean over masked pixels (mask shape [H,W,1]); if mask is None, fall back to x.mean()."""
+            if mask_hw1 is None:
+                return x.mean()
+            # Broadcast mask to match x channels if needed.
+            m = mask_hw1
+            if x.ndim == 3 and x.shape[-1] != 1:
+                m = m.expand_as(x)
+            denom = m.sum().clamp_min(1.0)
+            return (x * m).sum() / denom
         
         simloss = torch.tensor(0.0).to(self.device)
         if self.config.loss == "depth":
@@ -1927,11 +1949,20 @@ class SplatfactoModel(Model):
                 da3_depth_full = self._get_or_compute_da3_depth_fullres(cam_idx=cam_idx, image=batch["image"], focal_px=focal_px)
                 gt_depth = self._downscale_if_required(da3_depth_full.to(self.device))
             if mask is not None:
-                pred_depth = pred_depth * mask
-                gt_depth = gt_depth * mask
-            Ll1 = torch.abs(gt_depth - pred_depth).mean()
+                # pred_depth / gt_depth are [H,W,1] (or [H,W]); normalize reduction by active pixels.
+                if pred_depth.ndim == 2:
+                    pred_depth = pred_depth[:, :, None]
+                if gt_depth.ndim == 2:
+                    gt_depth = gt_depth[:, :, None]
+                Ll1 = _masked_mean(torch.abs(gt_depth - pred_depth), mask)
+            else:
+                Ll1 = torch.abs(gt_depth - pred_depth).mean()
         else:
-            Ll1 = torch.abs(gt_img - pred_img).mean()
+            if mask is not None:
+                # Use masked mean per-channel over active pixels only.
+                Ll1 = _masked_mean(torch.abs(gt_img_unmasked - pred_img_unmasked), mask)
+            else:
+                Ll1 = torch.abs(gt_img - pred_img).mean()
             simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
         
         if self.config.use_scale_regularization and self.step % 10 == 0:
