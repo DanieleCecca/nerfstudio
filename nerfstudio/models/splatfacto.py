@@ -1912,6 +1912,11 @@ class SplatfactoModel(Model):
             mask_t = torch.clamp(mask_t, 0.0, 1.0)
             assert mask_t.shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
             assert mask_t.shape[-1] == 1
+            # Debug: print mask statistics
+            active_pixels = mask_t.sum().item()
+            total_pixels = mask_t.numel()
+            active_percent = 100.0 * active_pixels / total_pixels if total_pixels > 0 else 0.0
+            CONSOLE.log(f"[cyan]Mask stats: {int(active_pixels)}/{int(total_pixels)} active pixels ({active_percent:.1f}%)[/cyan]")
             mask = mask_t
 
             # For SSIM (which is unweighted), we still multiply images pixel-wise so only masked pixels contribute.
