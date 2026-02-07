@@ -1589,12 +1589,15 @@ class SplatfactoModel(Model):
         # Tangential scales based on neighbor spacing on the sampled grid (same spirit as init code).
         du = Xs[:, :, 1:, :, :] - Xs[:, :, :-1, :, :]  # (S,R,U-1,V,3)
         dv = Xs[:, :, :, 1:, :] - Xs[:, :, :, :-1, :]  # (S,R,U,V-1,3)
-        sigma_u = torch.zeros((Xs.shape[0], Xs.shape[1], Xs.shape[2], Xs.shape[3]), device=Xs.device, dtype=Xs.dtype)
-        sigma_v = torch.zeros_like(sigma_u)
-        sigma_u[:, :, :-1, :] = torch.linalg.norm(du, dim=-1) / rho
-        sigma_u[:, :, -1, :] = sigma_u[:, :, -2, :].clamp_min(0.0)
-        sigma_v[:, :, :, :-1] = torch.linalg.norm(dv, dim=-1) / rho
-        sigma_v[:, :, :, -1] = sigma_v[:, :, :, -2].clamp_min(0.0)
+        # IMPORTANT: avoid in-place updates that read from and then write into the same tensor
+        # (can break autograd with "modified by an inplace operation" via AsStrided views).
+        sigma_u_base = torch.linalg.norm(du, dim=-1) / rho  # (S,R,U-1,V)
+        sigma_u_last = sigma_u_base[:, :, -1:, :].clamp_min(0.0)  # (S,R,1,V)
+        sigma_u = torch.cat([sigma_u_base, sigma_u_last], dim=2)  # (S,R,U,V)
+
+        sigma_v_base = torch.linalg.norm(dv, dim=-1) / rho  # (S,R,U,V-1)
+        sigma_v_last = sigma_v_base[:, :, :, -1:].clamp_min(0.0)  # (S,R,U,1)
+        sigma_v = torch.cat([sigma_v_base, sigma_v_last], dim=3)  # (S,R,U,V)
         sigma_n = torch.full_like(sigma_u, float(alpha / rho))
 
         su = sigma_u[ss, rr, uu, vv]
