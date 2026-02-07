@@ -1539,8 +1539,12 @@ class SplatfactoModel(Model):
         # Apply removals only on currently active surfaces.
         to_remove &= active
         if bool(to_remove.any()):
-            active[to_remove] = False
-            # `active` is a view of the registered buffer; modified in-place.
+            # Avoid in-place modification of a buffer view (can break autograd if the mask is
+            # referenced by the forward graph). Instead, update the registered buffer by
+            # replacing it with a cloned tensor.
+            new_active = active.clone()
+            new_active[to_remove] = False
+            self.bezier_surface_active = new_active
             return
 
     def _bezier_reparam_means_scales(self) -> Tuple[torch.Tensor, torch.Tensor]:
