@@ -330,6 +330,46 @@ class VanillaPipeline(Pipeline):
                     CONSOLE.log(
                         f"[green]Saved per-image segmentations to {getattr(config.model, 'sam2_segmentation_output_dir', 'data/grounded_sam2')}[/green]"
                     )
+                    
+                    # Convert SAM2 labelmaps to binary masks for dataparser
+                    try:
+                        from nerfstudio.models.sam2_semantics import convert_sam2_labelmaps_to_binary_masks
+                        from pathlib import Path
+                        
+                        sam2_output_dir = str(getattr(config.model, "sam2_segmentation_output_dir", "data/grounded_sam2"))
+                        # Get dataparser config from datamanager (after setup)
+                        dataparser_config = getattr(self.datamanager, "dataparser_config", None)
+                        if dataparser_config is None:
+                            dataparser_config = getattr(config.datamanager, "dataparser", None)
+                        
+                        masks_output_dir = "masks"  # default
+                        data_path = Path(".")
+                        images_path = "images"
+                        if dataparser_config is not None:
+                            masks_output_dir = str(getattr(dataparser_config, "masks_path", None) or "masks")
+                            data_path = Path(getattr(dataparser_config, "data", None) or Path("."))
+                            images_path = str(getattr(dataparser_config, "images_path", None) or "images")
+                        
+                        num_masks = convert_sam2_labelmaps_to_binary_masks(
+                            sam2_output_dir=sam2_output_dir,
+                            masks_output_dir=masks_output_dir,
+                            train_dataparser_outputs=self.datamanager.train_dataparser_outputs,  # type: ignore
+                            data_path=data_path,
+                            images_path=images_path,
+                        )
+                        if num_masks > 0:
+                            CONSOLE.log(
+                                f"[green]Converted {num_masks} SAM2 labelmaps to binary masks in {data_path / masks_output_dir}[/green]"
+                            )
+                            CONSOLE.log(
+                                f"[green]To use these masks, set --data.masks_path={masks_output_dir} in your config[/green]"
+                            )
+                        else:
+                            CONSOLE.log(
+                                f"[yellow]No SAM2 labelmaps found in {sam2_output_dir} to convert[/yellow]"
+                            )
+                    except Exception as e:
+                        CONSOLE.log(f"[yellow]Warning: Could not convert SAM2 labelmaps to masks: {e}[/yellow]")
                 else:
                     sam2_cfg = SAM2SemanticInitConfig(
                         model_id=str(getattr(config.model, "sam2_model_id", "facebook/sam2-hiera-large")),
@@ -401,6 +441,42 @@ class VanillaPipeline(Pipeline):
                         CONSOLE.log(f"[green]Saved SAM2 overlay to {overlay_png}[/green]")
                     except Exception as e:
                         CONSOLE.log(f"[yellow]Warning: could not save SAM2 visualization: {e}[/yellow]")
+                    
+                    # Convert SAM2 labelmap to binary mask for dataparser (single image mode)
+                    try:
+                        from nerfstudio.models.sam2_semantics import convert_sam2_labelmaps_to_binary_masks
+                        from pathlib import Path
+                        
+                        sam2_output_dir = str(getattr(config.model, "sam2_segmentation_output_dir", "data/grounded_sam2"))
+                        # Get dataparser config from datamanager (after setup)
+                        dataparser_config = getattr(self.datamanager, "dataparser_config", None)
+                        if dataparser_config is None:
+                            dataparser_config = getattr(config.datamanager, "dataparser", None)
+                        
+                        masks_output_dir = "masks"  # default
+                        data_path = Path(".")
+                        images_path = "images"
+                        if dataparser_config is not None:
+                            masks_output_dir = str(getattr(dataparser_config, "masks_path", None) or "masks")
+                            data_path = Path(getattr(dataparser_config, "data", None) or Path("."))
+                            images_path = str(getattr(dataparser_config, "images_path", None) or "images")
+                        
+                        num_masks = convert_sam2_labelmaps_to_binary_masks(
+                            sam2_output_dir=sam2_output_dir,
+                            masks_output_dir=masks_output_dir,
+                            train_dataparser_outputs=self.datamanager.train_dataparser_outputs,  # type: ignore
+                            data_path=data_path,
+                            images_path=images_path,
+                        )
+                        if num_masks > 0:
+                            CONSOLE.log(
+                                f"[green]Converted {num_masks} SAM2 labelmap(s) to binary masks in {data_path / masks_output_dir}[/green]"
+                            )
+                            CONSOLE.log(
+                                f"[green]To use these masks, set --data.masks_path={masks_output_dir} in your config[/green]"
+                            )
+                    except Exception as e:
+                        CONSOLE.log(f"[yellow]Warning: Could not convert SAM2 labelmap to mask: {e}[/yellow]")
             except Exception as e:
                 CONSOLE.log(f"[yellow]SAM2 semantic init skipped: {e}[/yellow]")
 

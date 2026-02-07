@@ -993,3 +993,77 @@ def compute_seed_semantic_labels_and_labelmap_from_sam2(
     labels = _labels_from_labelmap_votes(points_image_ids.shape[0], pidx, pixel_labels)
     return labels, label_map, image_uint8
 
+
+def convert_sam2_labelmaps_to_binary_masks(
+    *,
+    sam2_output_dir: str,
+    masks_output_dir: str,
+    train_dataparser_outputs: Any,
+    data_path: Path,
+    images_path: str = "images",
+) -> int:
+    """
+    Convert SAM2 labelmaps to binary masks with correct filenames for COLMAP dataparser.
+    
+    This function reads the labelmap_{idx}.npy files saved by SAM2 and converts them to binary masks
+    (label > 0 = object, label = 0 = background) with the same filenames as the original images.
+    
+    Args:
+        sam2_output_dir: Directory where SAM2 saved labelmap_{idx}.npy files (e.g., "data/grounded_sam2")
+        masks_output_dir: Directory where to save binary masks (relative to data_path, e.g., "masks")
+        train_dataparser_outputs: DataparserOutputs to get image filenames and mapping
+        data_path: Base data directory
+        images_path: Relative path to images directory (default: "images")
+    
+    Returns:
+        Number of masks successfully converted
+    """
+    from pathlib import Path
+    import numpy as np
+    from PIL import Image
+    
+    sam2_dir = Path(sam2_output_dir)
+    if not sam2_dir.exists():
+        return 0
+    
+    masks_dir = data_path / masks_output_dir
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get image filenames from dataparser outputs
+    image_filenames = train_dataparser_outputs.image_filenames
+    num_converted = 0
+    
+    # Map dataset index to original image filename
+    for idx, img_path in enumerate(image_filenames):
+        # SAM2 saved labelmap for this dataset index
+        labelmap_npy = sam2_dir / f"labelmap_{idx:05d}.npy"
+        if not labelmap_npy.exists():
+            continue
+        
+        try:
+            # Load labelmap
+            labelmap = np.load(labelmap_npy)  # (H, W) int64 or int32
+            
+            # Convert to binary mask: label > 0 = object (255), label = 0 = background (0)
+            mask_binary = (labelmap > 0).astype(np.uint8) * 255  # (H, W) uint8
+            
+            # Get original image filename to match COLMAP convention
+            # COLMAP dataparser expects: (data_path / masks_path / im_data.name).with_suffix(".png")
+            # where im_data.name is the original COLMAP image filename
+            img_path_obj = Path(img_path)
+            # Extract just the filename (name with extension) from the full path
+            # This matches what COLMAP uses: im_data.name
+            img_name_with_ext = img_path_obj.name
+            # Change extension to .png (COLMAP convention)
+            mask_filename = Path(img_name_with_ext).with_suffix(".png").name
+            mask_path = masks_dir / mask_filename
+            
+            # Save as PNG (binary mask: 0 = background, 255 = object)
+            Image.fromarray(mask_binary, mode="L").save(mask_path)
+            num_converted += 1
+        except Exception as e:
+            from nerfstudio.utils.rich_utils import CONSOLE
+            CONSOLE.log(f"[yellow]Warning: Could not convert labelmap_{idx:05d}.npy: {e}[/yellow]")
+            continue
+    
+    return num_converted
