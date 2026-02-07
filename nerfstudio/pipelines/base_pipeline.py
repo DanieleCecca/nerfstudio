@@ -353,6 +353,15 @@ class VanillaPipeline(Pipeline):
                             images_path = str(getattr(dataparser_config, "images_path", None) or "images")
                             downscale_factor = getattr(dataparser_config, "downscale_factor", None)
                             downscale_rounding_mode = str(getattr(dataparser_config, "downscale_rounding_mode", "floor") or "floor")
+
+                        # Prefer the actual runtime downscale factor from the dataparser instance (handles auto factor).
+                        try:
+                            dp = getattr(self.datamanager, "dataparser", None)
+                            actual_df = getattr(dp, "_downscale_factor", None)
+                            if actual_df is not None:
+                                downscale_factor = int(actual_df)
+                        except Exception:
+                            pass
                         
                         num_masks = convert_sam2_labelmaps_to_binary_masks(
                             sam2_output_dir=sam2_output_dir,
@@ -368,7 +377,7 @@ class VanillaPipeline(Pipeline):
                                 f"[green]Converted {num_masks} SAM2 labelmaps to binary masks in {data_path / masks_output_dir}[/green]"
                             )
                             CONSOLE.log(
-                                f"[green]To use these masks, set --data.masks_path={masks_output_dir} in your config[/green]"
+                                f"[green]To use these masks, set --masks-path {masks_output_dir} in your train command[/green]"
                             )
                         else:
                             CONSOLE.log(
@@ -463,11 +472,22 @@ class VanillaPipeline(Pipeline):
                         data_path = Path(".")
                         images_path = "images"
                         downscale_factor = None
+                        downscale_rounding_mode = "floor"
                         if dataparser_config is not None:
                             masks_output_dir = str(getattr(dataparser_config, "masks_path", None) or "masks")
                             data_path = Path(getattr(dataparser_config, "data", None) or Path("."))
                             images_path = str(getattr(dataparser_config, "images_path", None) or "images")
                             downscale_factor = getattr(dataparser_config, "downscale_factor", None)
+                            downscale_rounding_mode = str(getattr(dataparser_config, "downscale_rounding_mode", "floor") or "floor")
+
+                        # Prefer the actual runtime downscale factor from the dataparser instance (handles auto factor).
+                        try:
+                            dp = getattr(self.datamanager, "dataparser", None)
+                            actual_df = getattr(dp, "_downscale_factor", None)
+                            if actual_df is not None:
+                                downscale_factor = int(actual_df)
+                        except Exception:
+                            pass
                         
                         num_masks = convert_sam2_labelmaps_to_binary_masks(
                             sam2_output_dir=sam2_output_dir,
@@ -476,13 +496,14 @@ class VanillaPipeline(Pipeline):
                             data_path=data_path,
                             images_path=images_path,
                             downscale_factor=downscale_factor,
+                            downscale_rounding_mode=downscale_rounding_mode,
                         )
                         if num_masks > 0:
                             CONSOLE.log(
                                 f"[green]Converted {num_masks} SAM2 labelmap(s) to binary masks in {data_path / masks_output_dir}[/green]"
                             )
                             CONSOLE.log(
-                                f"[green]To use these masks, set --data.masks_path={masks_output_dir} in your config[/green]"
+                                f"[green]To use these masks, set --masks-path {masks_output_dir} in your train command[/green]"
                             )
                     except Exception as e:
                         CONSOLE.log(f"[yellow]Warning: Could not convert SAM2 labelmap to mask: {e}[/yellow]")

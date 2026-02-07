@@ -1033,11 +1033,15 @@ def convert_sam2_labelmaps_to_binary_masks(
     
     masks_dir = data_path / masks_output_dir
     masks_dir.mkdir(parents=True, exist_ok=True)
-    
-    # NOTE: We do NOT create masks_{downscale_factor}/ here because the dataparser
-    # will automatically downscale masks from masks/ when needed, ensuring they match
-    # the downscaled images. If we pre-downscale masks, they might not match the
-    # exact downscaling applied to images (especially with rounding modes).
+
+    # If images are downscaled (e.g. images_4/), COLMAP dataparser expects masks in masks_4/.
+    # We create both:
+    # - masks/<name>.png (full-res, for convenience / debugging)
+    # - masks_<factor>/<name>.png resized to match the actual downscaled image resolution
+    masks_downscaled_dir: Optional[Path] = None
+    if downscale_factor is not None and int(downscale_factor) > 1:
+        masks_downscaled_dir = data_path / f"{masks_output_dir}_{int(downscale_factor)}"
+        masks_downscaled_dir.mkdir(parents=True, exist_ok=True)
     
     # Get image filenames from dataparser outputs
     image_filenames = train_dataparser_outputs.image_filenames
@@ -1066,13 +1070,38 @@ def convert_sam2_labelmaps_to_binary_masks(
             img_name_with_ext = img_path_obj.name
             # Change extension to .png (COLMAP convention)
             mask_filename = Path(img_name_with_ext).with_suffix(".png").name
-            mask_path = masks_dir / mask_filename
-            
-            # Save full-resolution mask as PNG (binary mask: 0 = background, 255 = object)
-            # NOTE: We only save full-resolution masks. The dataparser will automatically
-            # downscale them from masks/ to masks_{downscale_factor}/ when needed, ensuring
-            # they match the exact downscaling applied to images.
-            Image.fromarray(mask_binary, mode="L").save(mask_path)
+
+            # Compute target sizes from actual images on disk (most robust; avoids rounding pitfalls).
+            # - img_path points to whatever the dataparser is currently using (often images_<factor>/...).
+            img_used_path = Path(img_path)
+            if img_used_path.exists():
+                w_used, h_used = Image.open(img_used_path).size
+            else:
+                # Fallback: use labelmap resolution.
+                h_used, w_used = int(mask_binary.shape[0]), int(mask_binary.shape[1])
+
+            # Try to locate the corresponding full-res image (data_path/images/<name>).
+            img_full_path = (data_path / Path(images_path) / img_name_with_ext).resolve()
+            if img_full_path.exists():
+                w_full, h_full = Image.open(img_full_path).size
+            else:
+                # Fallback: treat "used" as full-res if we can't find the original.
+                w_full, h_full = int(w_used), int(h_used)
+
+            # Save full-resolution mask (match full-res image size if we found it).
+            mask_full_path = masks_dir / mask_filename
+            mask_full_img = Image.fromarray(mask_binary, mode="L")
+            if (mask_full_img.size[0], mask_full_img.size[1]) != (w_full, h_full):
+                mask_full_img = mask_full_img.resize((int(w_full), int(h_full)), Image.Resampling.NEAREST)
+            mask_full_img.save(mask_full_path)
+
+            # Save downscaled mask to masks_<factor>/ (must match the image the dataparser loads).
+            if masks_downscaled_dir is not None:
+                mask_ds_path = masks_downscaled_dir / mask_filename
+                mask_ds_img = Image.fromarray(mask_binary, mode="L")
+                if (mask_ds_img.size[0], mask_ds_img.size[1]) != (w_used, h_used):
+                    mask_ds_img = mask_ds_img.resize((int(w_used), int(h_used)), Image.Resampling.NEAREST)
+                mask_ds_img.save(mask_ds_path)
             
             num_converted += 1
         except Exception as e:
