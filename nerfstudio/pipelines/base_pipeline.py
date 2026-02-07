@@ -346,11 +346,13 @@ class VanillaPipeline(Pipeline):
                         data_path = Path(".")
                         images_path = "images"
                         downscale_factor = None
+                        downscale_rounding_mode = "floor"
                         if dataparser_config is not None:
                             masks_output_dir = str(getattr(dataparser_config, "masks_path", None) or "masks")
                             data_path = Path(getattr(dataparser_config, "data", None) or Path("."))
                             images_path = str(getattr(dataparser_config, "images_path", None) or "images")
                             downscale_factor = getattr(dataparser_config, "downscale_factor", None)
+                            downscale_rounding_mode = str(getattr(dataparser_config, "downscale_rounding_mode", "floor") or "floor")
                         
                         num_masks = convert_sam2_labelmaps_to_binary_masks(
                             sam2_output_dir=sam2_output_dir,
@@ -359,6 +361,7 @@ class VanillaPipeline(Pipeline):
                             data_path=data_path,
                             images_path=images_path,
                             downscale_factor=downscale_factor,
+                            downscale_rounding_mode=downscale_rounding_mode,
                         )
                         if num_masks > 0:
                             CONSOLE.log(

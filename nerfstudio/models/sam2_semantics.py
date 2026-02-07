@@ -1002,6 +1002,7 @@ def convert_sam2_labelmaps_to_binary_masks(
     data_path: Path,
     images_path: str = "images",
     downscale_factor: Optional[int] = None,
+    downscale_rounding_mode: str = "floor",
 ) -> int:
     """
     Convert SAM2 labelmaps to binary masks with correct filenames for COLMAP dataparser.
@@ -1017,6 +1018,7 @@ def convert_sam2_labelmaps_to_binary_masks(
         data_path: Base data directory
         images_path: Relative path to images directory (default: "images")
         downscale_factor: Optional downscale factor. If set, masks will also be saved in masks_{downscale_factor}/
+        downscale_rounding_mode: Rounding mode for downscaling ("floor", "round", or "ceil"). Default: "floor"
     
     Returns:
         Number of masks successfully converted
@@ -1074,9 +1076,21 @@ def convert_sam2_labelmaps_to_binary_masks(
             if masks_downscaled_dir is not None:
                 mask_downscaled_path = masks_downscaled_dir / mask_filename
                 # Downscale using nearest neighbor (preserves binary mask)
+                # Use the same rounding mode as images (matches COLMAP dataparser logic)
+                import math
                 h, w = mask_binary.shape
-                h_down = h // downscale_factor
-                w_down = w // downscale_factor
+                # Match the downscaling logic used by COLMAP dataparser for images
+                if downscale_rounding_mode == "floor":
+                    w_down = math.floor(w / downscale_factor)
+                    h_down = math.floor(h / downscale_factor)
+                elif downscale_rounding_mode == "round":
+                    w_down = round(w / downscale_factor)
+                    h_down = round(h / downscale_factor)
+                elif downscale_rounding_mode == "ceil":
+                    w_down = math.ceil(w / downscale_factor)
+                    h_down = math.ceil(h / downscale_factor)
+                else:
+                    raise ValueError(f"Invalid downscale_rounding_mode: {downscale_rounding_mode}")
                 mask_downscaled = Image.fromarray(mask_binary, mode="L").resize(
                     (w_down, h_down), Image.Resampling.NEAREST
                 )
