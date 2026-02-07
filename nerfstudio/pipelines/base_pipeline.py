@@ -345,10 +345,12 @@ class VanillaPipeline(Pipeline):
                         masks_output_dir = "masks"  # default
                         data_path = Path(".")
                         images_path = "images"
+                        downscale_factor = None
                         if dataparser_config is not None:
                             masks_output_dir = str(getattr(dataparser_config, "masks_path", None) or "masks")
                             data_path = Path(getattr(dataparser_config, "data", None) or Path("."))
                             images_path = str(getattr(dataparser_config, "images_path", None) or "images")
+                            downscale_factor = getattr(dataparser_config, "downscale_factor", None)
                         
                         num_masks = convert_sam2_labelmaps_to_binary_masks(
                             sam2_output_dir=sam2_output_dir,
@@ -356,6 +358,7 @@ class VanillaPipeline(Pipeline):
                             train_dataparser_outputs=self.datamanager.train_dataparser_outputs,  # type: ignore
                             data_path=data_path,
                             images_path=images_path,
+                            downscale_factor=downscale_factor,
                         )
                         if num_masks > 0:
                             CONSOLE.log(
@@ -456,10 +459,12 @@ class VanillaPipeline(Pipeline):
                         masks_output_dir = "masks"  # default
                         data_path = Path(".")
                         images_path = "images"
+                        downscale_factor = None
                         if dataparser_config is not None:
                             masks_output_dir = str(getattr(dataparser_config, "masks_path", None) or "masks")
                             data_path = Path(getattr(dataparser_config, "data", None) or Path("."))
                             images_path = str(getattr(dataparser_config, "images_path", None) or "images")
+                            downscale_factor = getattr(dataparser_config, "downscale_factor", None)
                         
                         num_masks = convert_sam2_labelmaps_to_binary_masks(
                             sam2_output_dir=sam2_output_dir,
@@ -467,6 +472,7 @@ class VanillaPipeline(Pipeline):
                             train_dataparser_outputs=self.datamanager.train_dataparser_outputs,  # type: ignore
                             data_path=data_path,
                             images_path=images_path,
+                            downscale_factor=downscale_factor,
                         )
                         if num_masks > 0:
                             CONSOLE.log(

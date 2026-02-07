@@ -1001,12 +1001,14 @@ def convert_sam2_labelmaps_to_binary_masks(
     train_dataparser_outputs: Any,
     data_path: Path,
     images_path: str = "images",
+    downscale_factor: Optional[int] = None,
 ) -> int:
     """
     Convert SAM2 labelmaps to binary masks with correct filenames for COLMAP dataparser.
     
     This function reads the labelmap_{idx}.npy files saved by SAM2 and converts them to binary masks
     (label > 0 = object, label = 0 = background) with the same filenames as the original images.
+    If downscale_factor is provided, also saves downscaled versions in masks_{downscale_factor}/.
     
     Args:
         sam2_output_dir: Directory where SAM2 saved labelmap_{idx}.npy files (e.g., "data/grounded_sam2")
@@ -1014,6 +1016,7 @@ def convert_sam2_labelmaps_to_binary_masks(
         train_dataparser_outputs: DataparserOutputs to get image filenames and mapping
         data_path: Base data directory
         images_path: Relative path to images directory (default: "images")
+        downscale_factor: Optional downscale factor. If set, masks will also be saved in masks_{downscale_factor}/
     
     Returns:
         Number of masks successfully converted
@@ -1028,6 +1031,12 @@ def convert_sam2_labelmaps_to_binary_masks(
     
     masks_dir = data_path / masks_output_dir
     masks_dir.mkdir(parents=True, exist_ok=True)
+    
+    # If downscale_factor is set, also create the downscaled masks directory
+    masks_downscaled_dir = None
+    if downscale_factor is not None and downscale_factor > 1:
+        masks_downscaled_dir = data_path / f"{masks_output_dir}_{downscale_factor}"
+        masks_downscaled_dir.mkdir(parents=True, exist_ok=True)
     
     # Get image filenames from dataparser outputs
     image_filenames = train_dataparser_outputs.image_filenames
@@ -1058,8 +1067,21 @@ def convert_sam2_labelmaps_to_binary_masks(
             mask_filename = Path(img_name_with_ext).with_suffix(".png").name
             mask_path = masks_dir / mask_filename
             
-            # Save as PNG (binary mask: 0 = background, 255 = object)
+            # Save full-resolution mask as PNG (binary mask: 0 = background, 255 = object)
             Image.fromarray(mask_binary, mode="L").save(mask_path)
+            
+            # If downscale_factor is set, also save downscaled version
+            if masks_downscaled_dir is not None:
+                mask_downscaled_path = masks_downscaled_dir / mask_filename
+                # Downscale using nearest neighbor (preserves binary mask)
+                h, w = mask_binary.shape
+                h_down = h // downscale_factor
+                w_down = w // downscale_factor
+                mask_downscaled = Image.fromarray(mask_binary, mode="L").resize(
+                    (w_down, h_down), Image.Resampling.NEAREST
+                )
+                mask_downscaled.save(mask_downscaled_path)
+            
             num_converted += 1
         except Exception as e:
             from nerfstudio.utils.rich_utils import CONSOLE
