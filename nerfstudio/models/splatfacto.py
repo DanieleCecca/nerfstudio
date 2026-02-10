@@ -1427,8 +1427,6 @@ class SplatfactoModel(Model):
             int(getattr(self.config, "bezier_prune_tau_thick_max_steps", 10000)),
         )
         tau_area = float(getattr(self.config, "bezier_prune_tau_area", 0.0))
-        tau_color = float(getattr(self.config, "bezier_prune_tau_color", 0.0))
-        tau_iou = float(getattr(self.config, "bezier_prune_tau_iou", 0.9))
 
         # Mapping from Gaussians -> surface id (shell index).
         # Prefer an explicit pruning mapping if available; otherwise fall back to reparam/attach mappings.
@@ -1502,39 +1500,6 @@ class SplatfactoModel(Model):
         # Collapsed-shell pruning.
         if tau_th > 0.0:
             to_remove |= (thick < float(tau_th))
-
-        # Redundant-overlap pruning (color neighbors + max IoU).
-        if tau_color > 0.0 and tau_iou > 0.0:
-            def iou3d(min_a: torch.Tensor, max_a: torch.Tensor, min_b: torch.Tensor, max_b: torch.Tensor) -> torch.Tensor:
-                inter_min = torch.maximum(min_a, min_b)
-                inter_max = torch.minimum(max_a, max_b)
-                inter = (inter_max - inter_min).clamp_min(0.0)
-                inter_vol = inter[:, 0] * inter[:, 1] * inter[:, 2]
-                vol_a = ((max_a - min_a).clamp_min(0.0)).prod(dim=-1)
-                vol_b = ((max_b - min_b).clamp_min(0.0)).prod(dim=-1)
-                return inter_vol / (vol_a + vol_b - inter_vol).clamp_min(1e-12)
-
-            active_idx = torch.nonzero(active, as_tuple=False).squeeze(-1)
-            # Iterate deterministically; remove a surface if it overlaps too much with a color-similar neighbor.
-            for i in active_idx.tolist():
-                if bool(to_remove[i]) or (not bool(active[i])):
-                    continue
-                ci = mean_c[i]
-                # Candidate neighbors by color diff.
-                cd = torch.linalg.norm(mean_c - ci[None, :], dim=-1)  # (S,)
-                nbr = (cd < float(tau_color)) & active
-                nbr[i] = False
-                if not bool(nbr.any()):
-                    continue
-                j_idx = torch.nonzero(nbr, as_tuple=False).squeeze(-1)
-                ious = iou3d(
-                    aabb_min[j_idx],
-                    aabb_max[j_idx],
-                    aabb_min[i].expand_as(aabb_min[j_idx]),
-                    aabb_max[i].expand_as(aabb_max[j_idx]),
-                )
-                if float(ious.max().item()) > float(tau_iou):
-                    to_remove[i] = True
 
         # Apply removals only on currently active surfaces.
         to_remove &= active
