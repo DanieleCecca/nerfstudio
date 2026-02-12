@@ -206,9 +206,11 @@ class SplatfactoModelConfig(ModelConfig):
     """
 
     bezier_surface_mode: Literal["open", "closed", "both"] = "open"
-    """Which Bezier geometry to use for initialization:
+    """Which Bezier geometry to use for Gaussian initialization:
 
-    - "open": use only the outer Bezier surface S_out(u,v) (previous behavior)
+    - "open": use only the outer Bezier surface S_out(u,v) (r=0).
+      When reparam, pruning, topo-loss, or attach-loss are enabled, a thin shell
+      (out/in pair) is still constructed behind the scenes so those features work.
     - "closed": use only the interior/inner part of the shell (S_1..S_{R-1}); requires paired out/in
     - "both": use the full shell stack (S_0..S_{R-1}); requires paired out/in
     """
@@ -581,12 +583,24 @@ class SplatfactoModel(Model):
                         if mode not in ("open", "closed", "both"):
                             raise ValueError(f"Unknown bezier_surface_mode={mode!r}. Expected 'open', 'closed', or 'both'.")
 
-                        if mode in ("closed", "both"):
+                        # Determine whether we need a full shell (paired out/in surfaces).
+                        # Closed/both modes always need it.  Open mode needs it only when
+                        # reparam, pruning, topo-loss, or attach-loss are enabled.
+                        needs_shell = (mode in ("closed", "both")) or (
+                            bool(getattr(self.config, "bezier_topo_loss_enabled", False))
+                            or bool(getattr(self.config, "bezier_attach_loss_enabled", False))
+                            or bool(getattr(self.config, "bezier_reparam_enabled", False))
+                            or bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
+                        )
+
+                        if needs_shell:
                             R_layers = int(self.config.bezier_num_r)
                             thickness = float(self.config.bezier_closed_thickness)
-                            include_walls = bool(getattr(self.config, "bezier_closed_include_walls", False))
                             if R_layers < 2:
-                                raise ValueError("bezier_num_r must be >= 2 when bezier_surface_mode is 'closed' or 'both'.")
+                                raise ValueError(
+                                    "bezier_num_r must be >= 2 when shell features are enabled "
+                                    "(bezier_surface_mode='closed'/'both', or reparam/pruning/topo/attach in 'open' mode)."
+                                )
 
                             # Outer samples + normals (for constructing an inner target surface).
                             X_out = patch.sample(num_u=Nu, num_v=Nv).float()  # (Nu,Nv,3)
@@ -617,7 +631,7 @@ class SplatfactoModel(Model):
                             shell = BezierShellPatch(cp_out, cp_in)
                             X_layers = shell.sample_intermediate_layers(num_r=R_layers, num_u=Nu, num_v=Nv).float()  # (R,Nu,Nv,3)
 
-                            # Keep control points around for regularizers (trainable Parameters).
+                            # Keep control points around for regularizers / reparam / pruning.
                             keep_shell_params = bool(getattr(self.config, "bezier_topo_loss_enabled", False)) or bool(
                                 getattr(self.config, "bezier_attach_loss_enabled", False)
                             ) or bool(getattr(self.config, "bezier_reparam_enabled", False)) or bool(
@@ -629,37 +643,40 @@ class SplatfactoModel(Model):
                                 topo_cp_out_list.append(cp_out.detach().to(dtype=torch.float32))
                                 topo_cp_in_list.append(cp_in.detach().to(dtype=torch.float32))
 
+                            # Walls are only relevant for closed/both modes.
+                            include_walls = bool(getattr(self.config, "bezier_closed_include_walls", False)) and mode in ("closed", "both")
                             if include_walls:
                                 walls = shell.sample_walls(num_r=R_layers, num_u=Nu, num_v=Nv)
-                                # Turn each wall (R, edge, 3) into a "surface" (R, edge, 1, 3) so it reuses the same codepath.
                                 X_walls = [w.unsqueeze(2) for w in walls.values()]
-                                X = X_layers
                                 extra_wall_surfaces = X_walls
                             else:
-                                X = X_layers
                                 extra_wall_surfaces = []
 
-                            # Select which layers are used for Gaussian init.
-                            # - "both": keep full stack (includes S_out at r=0)
-                            # - "closed": drop the outermost layer, keep interior+inner (S_1..S_{R-1})
-                            if mode == "closed":
-                                X = X[1:]
+                            # Select which layers are used for Gaussian init based on mode:
+                            #  - "open":   only the outer surface (r=0)
+                            #  - "closed": drop outermost, keep interior+inner (S_1..S_{R-1})
+                            #  - "both":   full stack (S_0..S_{R-1})
+                            if mode == "open":
+                                X = X_layers[0:1]
+                            elif mode == "closed":
+                                X = X_layers[1:]
                                 if X.shape[0] == 0:
                                     raise ValueError("bezier_num_r too small: 'closed' mode requires R>=2 to have any layers after dropping S_out.")
+                            else:  # "both"
+                                X = X_layers
 
+                            # Record indices mapping each initialized Gaussian to a shell grid position.
                             attach_enabled = bool(getattr(self.config, "bezier_attach_loss_enabled", False))
                             reparam_enabled = bool(getattr(self.config, "bezier_reparam_enabled", False))
                             prune_enabled = bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
-                            # Optional: record indices (mapping each initialized Gaussian to a shell grid index).
-                            # - attach/reparam need (shell,r,u,v)
-                            # - pruning needs only (shell)
                             if (attach_enabled or reparam_enabled or prune_enabled) and keep_shell_params and shell_id >= 0:
-                                # X is the stack actually used for Gaussian init (after optional drop in "closed" mode).
                                 Rused = int(X.shape[0])
                                 # Indices in the *full* R_layers stack:
-                                if mode == "closed":
+                                if mode == "open":
+                                    r_full = torch.arange(0, 1, dtype=torch.long)  # just [0]
+                                elif mode == "closed":
                                     r_full = torch.arange(1, R_layers, dtype=torch.long)  # (R-1,)
-                                else:
+                                else:  # "both"
                                     r_full = torch.arange(0, R_layers, dtype=torch.long)  # (R,)
                                 assert int(r_full.shape[0]) == Rused
                                 rr = r_full.view(Rused, 1, 1).expand(Rused, Nu, Nv).reshape(-1)
@@ -679,7 +696,7 @@ class SplatfactoModel(Model):
                                 if prune_enabled:
                                     prune_surface_idx_list.append(ss)
                         else:
-                            # Open mode: just the outer surface.
+                            # Simple open mode: no shell features needed.
                             X = patch.sample(num_u=Nu, num_v=Nv).float().unsqueeze(0)  # (1,Nu,Nv,3)
                             extra_wall_surfaces = []
 
@@ -1661,6 +1678,13 @@ class SplatfactoModel(Model):
             quats_crop = quats_all
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
+
+        # Guard: if all Gaussians were filtered out (e.g., by surface pruning or crop box),
+        # return an empty image immediately instead of calling rasterization with N=0.
+        if means_crop.shape[0] == 0:
+            return self.get_empty_outputs(
+                int(camera.width.item()), int(camera.height.item()), self.background_color
+            )
 
         camera_scale_fac = self._get_downscale_factor()
         # Full-res intrinsics (useful for depth-supervision targets derived from the GT image).
