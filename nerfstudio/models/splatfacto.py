@@ -53,6 +53,7 @@ from nerfstudio.model_components.bezier_surface import (
     bezier_shell_topo_losses_from_samples,
     fit_bezier_control_points_from_grid,
     generate_bezier_patches_from_labeled_points,
+    sample_bezier_surfaces,
     sample_paired_bezier_surfaces,
 )
 
@@ -294,8 +295,8 @@ class SplatfactoModelConfig(ModelConfig):
     bezier_surface_pruning_enabled: bool = False
     """If True, run adaptive pruning at the *surface* level (Bezier shell patches) instead of gsplat densify/prune.
 
-    Surfaces are deactivated (and their associated Gaussians are excluded from rendering/loss) based on opacity/area/
-    thickness/color redundancy (AABB IoU), as described in the user's write-up.
+    Surfaces are deactivated (and their associated Gaussians are excluded from rendering/loss) based on opacity,
+    area, and shell thickness. (Color and AABB IoU redundancy are reserved for future use.)
     """
 
     bezier_prune_every: int = 100
@@ -308,10 +309,10 @@ class SplatfactoModelConfig(ModelConfig):
     """Small-area pruning threshold. 0 disables area pruning."""
 
     bezier_prune_tau_color: float = 0.0
-    """Neighbor color similarity threshold (Euclidean). 0 disables redundancy pruning."""
+    """Reserved: neighbor color similarity (Euclidean). Not used by current pruning."""
 
     bezier_prune_tau_iou: float = 0.9
-    """Redundant-overlap pruning threshold on 3D AABB IoU."""
+    """Reserved: redundant-overlap threshold on 3D AABB IoU. Not used by current pruning."""
 
     bezier_prune_tau_opacity_start: float = 0.01
     """Initial low-opacity pruning threshold (adaptive schedule)."""
@@ -332,10 +333,10 @@ class SplatfactoModelConfig(ModelConfig):
     """Steps over which tau_thick is annealed from start to end."""
 
     bezier_prune_area_num_u: int = 20
-    """U samples used to estimate surface area/AABB/thickness for pruning."""
+    """U samples used to estimate surface area and thickness for pruning."""
 
     bezier_prune_area_num_v: int = 20
-    """V samples used to estimate surface area/AABB/thickness for pruning."""
+    """V samples used to estimate surface area and thickness for pruning."""
 
     # --- SAM2 semantic init (optional; executed at train startup in VanillaPipeline) ---
     sam2_semantic_init_enabled: bool = False
@@ -517,6 +518,11 @@ class SplatfactoModel(Model):
         reparam_u_idx_list: List[torch.Tensor] = []
         reparam_v_idx_list: List[torch.Tensor] = []
         prune_surface_idx_list: List[torch.Tensor] = []
+        # Open-mode: trainable control points and per-Gaussian → patch/u/v mapping.
+        open_cp_list: List[torch.Tensor] = []
+        open_patch_idx_list: List[torch.Tensor] = []
+        open_u_idx_list: List[torch.Tensor] = []
+        open_v_idx_list: List[torch.Tensor] = []
 
         # Optional: initialize Gaussians from Bezier surface samples (requires semantic labels for seed points).
         meta = self.kwargs.get("metadata", {}) if isinstance(self.kwargs, dict) else {}
@@ -583,27 +589,47 @@ class SplatfactoModel(Model):
                         if mode not in ("open", "closed", "both"):
                             raise ValueError(f"Unknown bezier_surface_mode={mode!r}. Expected 'open', 'closed', or 'both'.")
 
-                        # Determine whether we need a full shell (paired out/in surfaces).
-                        # Closed/both modes always need it.  Open mode needs it only when
-                        # reparam, pruning, topo-loss, or attach-loss are enabled.
-                        needs_shell = (mode in ("closed", "both")) or (
-                            bool(getattr(self.config, "bezier_topo_loss_enabled", False))
-                            or bool(getattr(self.config, "bezier_attach_loss_enabled", False))
-                            or bool(getattr(self.config, "bezier_reparam_enabled", False))
-                            or bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
-                        )
+                        if mode == "open":
+                            # ── Open mode ──────────────────────────────────────────
+                            # Single Bezier surface with trainable, initially-planar
+                            # control points.  At every training iteration the
+                            # Gaussians are re-sampled from the (updated) patch, so
+                            # the rendering loss back-propagates to the CPs.
+                            X = patch.sample(num_u=Nu, num_v=Nv).float().unsqueeze(0)  # (1, Nu, Nv, 3)
 
-                        if needs_shell:
+                            pid = len(open_cp_list)
+                            open_cp_list.append(patch.control_points.detach().float())
+                            n_gauss_patch = Nu * Nv
+                            open_patch_idx_list.append(
+                                torch.full((n_gauss_patch,), pid, dtype=torch.long)
+                            )
+                            open_u_idx_list.append(
+                                torch.arange(Nu, dtype=torch.long)
+                                .unsqueeze(1).expand(Nu, Nv).reshape(-1)
+                            )
+                            open_v_idx_list.append(
+                                torch.arange(Nv, dtype=torch.long)
+                                .unsqueeze(0).expand(Nu, Nv).reshape(-1)
+                            )
+
+                            if bool(getattr(self.config, "bezier_surface_pruning_enabled", False)):
+                                prune_surface_idx_list.append(
+                                    torch.full((n_gauss_patch,), pid, dtype=torch.long)
+                                )
+
+                            extra_wall_surfaces = []
+
+                        else:
+                            # ── Closed / both modes ────────────────────────────────
+                            # Construct a paired shell (out + in surfaces).
                             R_layers = int(self.config.bezier_num_r)
                             thickness = float(self.config.bezier_closed_thickness)
                             if R_layers < 2:
                                 raise ValueError(
-                                    "bezier_num_r must be >= 2 when shell features are enabled "
-                                    "(bezier_surface_mode='closed'/'both', or reparam/pruning/topo/attach in 'open' mode)."
+                                    "bezier_num_r must be >= 2 for closed/both mode."
                                 )
 
-                            # Outer samples + normals (for constructing an inner target surface).
-                            X_out = patch.sample(num_u=Nu, num_v=Nv).float()  # (Nu,Nv,3)
+                            X_out = patch.sample(num_u=Nu, num_v=Nv).float()
                             Xu_f0 = torch.zeros_like(X_out)
                             Xu_f0[1:-1] = X_out[2:] - X_out[:-2]
                             Xu_f0[0] = X_out[1] - X_out[0]
@@ -617,25 +643,24 @@ class SplatfactoModel(Model):
                             tv0 = _safe_normalize(Xv_f0)
 
                             n0 = _safe_normalize(torch.cross(tu0, tv0, dim=-1))
-                            # Construct inner target points and fit a Bezier surface of the same degree.
                             X_in_tgt = X_out - thickness * n0
                             cp_out = patch.control_points
                             deg_u = int(cp_out.shape[0]) - 1
                             deg_v = int(cp_out.shape[1]) - 1
                             cp_in = fit_bezier_control_points_from_grid(
-                                X_in_tgt.to(dtype=cp_out.dtype),
-                                m=deg_u,
-                                n=deg_v,
+                                X_in_tgt.to(dtype=cp_out.dtype), m=deg_u, n=deg_v,
                             ).to(device=cp_out.device, dtype=cp_out.dtype)
 
                             shell = BezierShellPatch(cp_out, cp_in)
-                            X_layers = shell.sample_intermediate_layers(num_r=R_layers, num_u=Nu, num_v=Nv).float()  # (R,Nu,Nv,3)
+                            X_layers = shell.sample_intermediate_layers(
+                                num_r=R_layers, num_u=Nu, num_v=Nv
+                            ).float()
 
-                            # Keep control points around for regularizers / reparam / pruning.
-                            keep_shell_params = bool(getattr(self.config, "bezier_topo_loss_enabled", False)) or bool(
-                                getattr(self.config, "bezier_attach_loss_enabled", False)
-                            ) or bool(getattr(self.config, "bezier_reparam_enabled", False)) or bool(
-                                getattr(self.config, "bezier_surface_pruning_enabled", False)
+                            keep_shell_params = (
+                                bool(getattr(self.config, "bezier_topo_loss_enabled", False))
+                                or bool(getattr(self.config, "bezier_attach_loss_enabled", False))
+                                or bool(getattr(self.config, "bezier_reparam_enabled", False))
+                                or bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
                             )
                             shell_id = -1
                             if keep_shell_params:
@@ -643,41 +668,34 @@ class SplatfactoModel(Model):
                                 topo_cp_out_list.append(cp_out.detach().to(dtype=torch.float32))
                                 topo_cp_in_list.append(cp_in.detach().to(dtype=torch.float32))
 
-                            # Walls are only relevant for closed/both modes.
-                            include_walls = bool(getattr(self.config, "bezier_closed_include_walls", False)) and mode in ("closed", "both")
+                            include_walls = (
+                                bool(getattr(self.config, "bezier_closed_include_walls", False))
+                                and mode in ("closed", "both")
+                            )
                             if include_walls:
                                 walls = shell.sample_walls(num_r=R_layers, num_u=Nu, num_v=Nv)
-                                X_walls = [w.unsqueeze(2) for w in walls.values()]
-                                extra_wall_surfaces = X_walls
+                                extra_wall_surfaces = [w.unsqueeze(2) for w in walls.values()]
                             else:
                                 extra_wall_surfaces = []
 
-                            # Select which layers are used for Gaussian init based on mode:
-                            #  - "open":   only the outer surface (r=0)
-                            #  - "closed": drop outermost, keep interior+inner (S_1..S_{R-1})
-                            #  - "both":   full stack (S_0..S_{R-1})
-                            if mode == "open":
-                                X = X_layers[0:1]
-                            elif mode == "closed":
+                            if mode == "closed":
                                 X = X_layers[1:]
                                 if X.shape[0] == 0:
-                                    raise ValueError("bezier_num_r too small: 'closed' mode requires R>=2 to have any layers after dropping S_out.")
+                                    raise ValueError(
+                                        "bezier_num_r too small: 'closed' mode requires R>=2."
+                                    )
                             else:  # "both"
                                 X = X_layers
 
-                            # Record indices mapping each initialized Gaussian to a shell grid position.
                             attach_enabled = bool(getattr(self.config, "bezier_attach_loss_enabled", False))
                             reparam_enabled = bool(getattr(self.config, "bezier_reparam_enabled", False))
                             prune_enabled = bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
                             if (attach_enabled or reparam_enabled or prune_enabled) and keep_shell_params and shell_id >= 0:
                                 Rused = int(X.shape[0])
-                                # Indices in the *full* R_layers stack:
-                                if mode == "open":
-                                    r_full = torch.arange(0, 1, dtype=torch.long)  # just [0]
-                                elif mode == "closed":
-                                    r_full = torch.arange(1, R_layers, dtype=torch.long)  # (R-1,)
-                                else:  # "both"
-                                    r_full = torch.arange(0, R_layers, dtype=torch.long)  # (R,)
+                                if mode == "closed":
+                                    r_full = torch.arange(1, R_layers, dtype=torch.long)
+                                else:
+                                    r_full = torch.arange(0, R_layers, dtype=torch.long)
                                 assert int(r_full.shape[0]) == Rused
                                 rr = r_full.view(Rused, 1, 1).expand(Rused, Nu, Nv).reshape(-1)
                                 uu = torch.arange(Nu, dtype=torch.long).view(1, Nu, 1).expand(Rused, Nu, Nv).reshape(-1)
@@ -695,10 +713,6 @@ class SplatfactoModel(Model):
                                     reparam_v_idx_list.append(vv)
                                 if prune_enabled:
                                     prune_surface_idx_list.append(ss)
-                        else:
-                            # Simple open mode: no shell features needed.
-                            X = patch.sample(num_u=Nu, num_v=Nv).float().unsqueeze(0)  # (1,Nu,Nv,3)
-                            extra_wall_surfaces = []
 
                         # Tangent directions via finite differences (central; forward/backward at borders).
                         Xu_f = torch.zeros_like(X)
@@ -810,8 +824,48 @@ class SplatfactoModel(Model):
             except Exception as e:
                 CONSOLE.log(f"[yellow]Bezier init failed, falling back to standard seed init: {e}[/yellow]")
 
-        # If requested and available, register trainable Bezier shell control points for topology regularization.
-        # Note: this is independent of the Gaussian parameters; it regularizes the shell itself.
+        # ── Open-mode: register trainable Bezier control points and index buffers ──
+        if len(open_cp_list) > 0:
+            try:
+                self.bezier_open_cp = torch.nn.Parameter(
+                    torch.stack(open_cp_list, dim=0)  # (S, G, G, 3)
+                )
+                self.register_buffer(
+                    "bezier_open_patch_idx",
+                    torch.cat(open_patch_idx_list, dim=0).to(dtype=torch.long),
+                    persistent=True,
+                )
+                self.register_buffer(
+                    "bezier_open_u_idx",
+                    torch.cat(open_u_idx_list, dim=0).to(dtype=torch.long),
+                    persistent=True,
+                )
+                self.register_buffer(
+                    "bezier_open_v_idx",
+                    torch.cat(open_v_idx_list, dim=0).to(dtype=torch.long),
+                    persistent=True,
+                )
+                S_open = int(self.bezier_open_cp.shape[0])
+                if bool(getattr(self.config, "bezier_surface_pruning_enabled", False)):
+                    self.register_buffer(
+                        "bezier_surface_active",
+                        torch.ones((S_open,), dtype=torch.bool),
+                        persistent=True,
+                    )
+                    if len(prune_surface_idx_list) > 0:
+                        self.register_buffer(
+                            "bezier_surface_gaussian_surface_idx",
+                            torch.cat(prune_surface_idx_list, dim=0).to(dtype=torch.long),
+                            persistent=True,
+                        )
+                CONSOLE.log(
+                    f"[green]Bezier open mode: {S_open} patches, "
+                    f"{int(self.bezier_open_patch_idx.shape[0])} Gaussians[/green]"
+                )
+            except Exception as e:
+                CONSOLE.log(f"[yellow]Warning: failed to register open-mode Bezier params: {e}[/yellow]")
+
+        # Register trainable Bezier shell control points for closed/both topology regularization.
         if (
             (bool(getattr(self.config, "bezier_topo_loss_enabled", False)) or bool(getattr(self.config, "bezier_reparam_enabled", False)))
             and len(topo_cp_out_list) > 0
@@ -1088,8 +1142,13 @@ class SplatfactoModel(Model):
 
     def step_post_backward(self, step):
         assert step == self.step
-        # Bezier reparameterization mode is incompatible with standard densification/pruning hooks that assume
-        # independent learnable per-Gaussian means/scales.
+        # Open-mode Bezier: means/scales come from the patch, skip standard
+        # densification but still allow surface-level pruning.
+        if hasattr(self, "bezier_open_cp"):
+            if bool(getattr(self.config, "bezier_surface_pruning_enabled", False)):
+                self._maybe_prune_bezier_surfaces()
+            return
+        # Shell reparameterization / surface pruning: also skip standard densification.
         if bool(getattr(self.config, "bezier_reparam_enabled", False)) or bool(getattr(self.config, "bezier_surface_pruning_enabled", False)):
             if bool(getattr(self.config, "bezier_surface_pruning_enabled", False)):
                 self._maybe_prune_bezier_surfaces()
@@ -1314,18 +1373,21 @@ class SplatfactoModel(Model):
             name: [self.gauss_params[name]]
             for name in ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]
         }
-        # If we have trainable Bezier shell control points (topology loss / attach / reparam), make sure they get optimized.
+
+        # Open-mode Bezier: control points replace means/scales in the optimizer.
+        if hasattr(self, "bezier_open_cp"):
+            gps["means"] = [self.bezier_open_cp]
+            gps.pop("scales", None)
+            return gps
+
+        # Shell-mode: trainable shell CPs (topology / attach / reparam).
         if hasattr(self, "bezier_shell_cp_out") and (
             bool(getattr(self.config, "bezier_topo_loss_enabled", False))
             or bool(getattr(self.config, "bezier_attach_loss_enabled", False))
             or bool(getattr(self.config, "bezier_reparam_enabled", False))
         ):
-            # Reuse the existing "means" optimizer group by default to avoid requiring extra optimizer config.
-            # (If bezier_reparam_enabled, we will override "means" below.)
             gps["means"] = list(gps.get("means", [])) + [self.bezier_shell_cp_out, self.bezier_shell_cp_in]
 
-        # In reparameterization mode, Gaussian means/scales are functions of Bezier control points.
-        # We therefore optimize the control points (in the "means" group) and stop optimizing per-Gaussian means/scales.
         if bool(getattr(self.config, "bezier_reparam_enabled", False)) and hasattr(self, "bezier_shell_cp_out"):
             gps["means"] = [self.bezier_shell_cp_out, self.bezier_shell_cp_in]
             gps.pop("scales", None)
@@ -1405,16 +1467,19 @@ class SplatfactoModel(Model):
 
     @torch.no_grad()
     def _maybe_prune_bezier_surfaces(self) -> None:
-        """Adaptive pruning for Bezier shell surfaces (deactivate redundant/degenerate surfaces).
+        """Adaptive pruning for Bezier surfaces (deactivate redundant/degenerate patches).
 
-        This *does not resize parameters*; it updates a boolean mask `bezier_surface_active` and downstream rendering
-        excludes Gaussians belonging to inactive surfaces.
+        Works for both open-mode (single surface per patch) and shell-mode
+        (paired out/in surfaces).  Updates a boolean mask ``bezier_surface_active``
+        so that downstream rendering excludes Gaussians of inactive patches.
         """
         if not bool(getattr(self.config, "bezier_surface_pruning_enabled", False)):
             return
         if not hasattr(self, "bezier_surface_active"):
             return
-        if not hasattr(self, "bezier_shell_cp_out"):
+        is_open = hasattr(self, "bezier_open_cp")
+        is_shell = hasattr(self, "bezier_shell_cp_out")
+        if not (is_open or is_shell):
             return
         if int(self.step) < int(getattr(self.config, "bezier_prune_start_step", 0)):
             return
@@ -1428,7 +1493,6 @@ class SplatfactoModel(Model):
             return
 
         device = self.device
-        dtype = self.bezier_shell_cp_out.dtype
 
         # Schedules.
         tau_op = self._linear_schedule(
@@ -1437,30 +1501,23 @@ class SplatfactoModel(Model):
             float(getattr(self.config, "bezier_prune_tau_opacity_end", 0.001)),
             int(getattr(self.config, "bezier_prune_tau_opacity_max_steps", 10000)),
         )
-        tau_th = self._linear_schedule(
-            int(self.step),
-            float(getattr(self.config, "bezier_prune_tau_thick_start", 0.002)),
-            float(getattr(self.config, "bezier_prune_tau_thick_end", 0.0005)),
-            int(getattr(self.config, "bezier_prune_tau_thick_max_steps", 10000)),
-        )
         tau_area = float(getattr(self.config, "bezier_prune_tau_area", 0.0))
 
-        # Mapping from Gaussians -> surface id (shell index).
-        # Prefer an explicit pruning mapping if available; otherwise fall back to reparam/attach mappings.
+        # Mapping from Gaussians → surface id.
         if hasattr(self, "bezier_surface_gaussian_surface_idx"):
             ss = self.bezier_surface_gaussian_surface_idx.to(device=device)
+        elif is_open and hasattr(self, "bezier_open_patch_idx"):
+            ss = self.bezier_open_patch_idx.to(device=device)
         elif hasattr(self, "bezier_reparam_shell_idx"):
             ss = self.bezier_reparam_shell_idx.to(device=device)
         elif hasattr(self, "bezier_attach_shell_idx"):
             ss = self.bezier_attach_shell_idx.to(device=device)
         else:
-            # No association available -> can't compute per-surface opacity/color stats robustly.
             return
 
         # Per-surface mean opacity from associated Gaussians.
         alpha_g = torch.sigmoid(self.opacities.detach().to(device=device)).squeeze(-1)  # (N,)
         if int(alpha_g.shape[0]) != int(ss.shape[0]):
-            # Shape mismatch (e.g., densification has changed N). Bail to be safe.
             return
         sum_op = torch.zeros((S,), device=device, dtype=torch.float32)
         cnt = torch.zeros((S,), device=device, dtype=torch.float32)
@@ -1468,43 +1525,33 @@ class SplatfactoModel(Model):
         cnt.scatter_add_(0, ss, torch.ones_like(alpha_g, dtype=torch.float32))
         mean_op = sum_op / cnt.clamp_min(1.0)
 
-        # Per-surface mean color (RGB) from associated Gaussians.
-        colors_g = self.colors.detach().to(device=device)  # (N,3)
-        sum_c = torch.zeros((S, 3), device=device, dtype=torch.float32)
-        sum_c.scatter_add_(0, ss[:, None].expand(-1, 3), colors_g.to(dtype=torch.float32))
-        mean_c = sum_c / cnt[:, None].clamp_min(1.0)
+        # Geometric stats: area (and optionally thickness for shell mode).
+        Nu = max(2, int(getattr(self.config, "bezier_prune_area_num_u", 20)))
+        Nv = max(2, int(getattr(self.config, "bezier_prune_area_num_v", 20)))
 
-        # Geometric stats from the shell control points (area, thickness, AABB).
-        Nu = int(getattr(self.config, "bezier_prune_area_num_u", 20))
-        Nv = int(getattr(self.config, "bezier_prune_area_num_v", 20))
-        Nu = max(2, Nu)
-        Nv = max(2, Nv)
-        X2 = sample_paired_bezier_surfaces(
-            self.bezier_shell_cp_out.to(device=device, dtype=dtype),
-            self.bezier_shell_cp_in.to(device=device, dtype=dtype),
-            num_r=2,
-            num_u=Nu,
-            num_v=Nv,
-        )  # (S,2,Nu,Nv,3)
-        X_out = X2[:, 0]
-        X_in = X2[:, 1]
+        if is_open:
+            dtype_cp = self.bezier_open_cp.dtype
+            X_surf = sample_bezier_surfaces(
+                self.bezier_open_cp.to(device=device, dtype=dtype_cp),
+                num_u=Nu, num_v=Nv,
+            )  # (S, Nu, Nv, 3)
+            thick = None
+        else:
+            dtype_cp = self.bezier_shell_cp_out.dtype
+            X2 = sample_paired_bezier_surfaces(
+                self.bezier_shell_cp_out.to(device=device, dtype=dtype_cp),
+                self.bezier_shell_cp_in.to(device=device, dtype=dtype_cp),
+                num_r=2, num_u=Nu, num_v=Nv,
+            )  # (S, 2, Nu, Nv, 3)
+            X_surf = X2[:, 0]
+            thick = torch.linalg.norm(X2[:, 0] - X2[:, 1], dim=-1).mean(dim=(1, 2))  # (S,)
 
-        # Thickness (paired shell).
-        thick = torch.linalg.norm(X_out - X_in, dim=-1).mean(dim=(1, 2))  # (S,)
-
-        # Area estimate (outer surface only), per cell.
-        p00 = X_out[:, :-1, :-1, :]
-        p10 = X_out[:, 1:, :-1, :]
-        p01 = X_out[:, :-1, 1:, :]
-        area_cells = torch.linalg.norm(torch.cross(p10 - p00, p01 - p00, dim=-1), dim=-1)  # (S,Nu-1,Nv-1)
+        p00 = X_surf[:, :-1, :-1, :]
+        p10 = X_surf[:, 1:, :-1, :]
+        p01 = X_surf[:, :-1, 1:, :]
+        area_cells = torch.linalg.norm(torch.cross(p10 - p00, p01 - p00, dim=-1), dim=-1)
         area = area_cells.sum(dim=(1, 2))  # (S,)
 
-        # AABB from out+in samples.
-        pts = X2.reshape(S, -1, 3)
-        aabb_min = pts.amin(dim=1)  # (S,3)
-        aabb_max = pts.amax(dim=1)  # (S,3)
-
-        # Decide removals.
         to_remove = torch.zeros((S,), device=device, dtype=torch.bool)
 
         # Low-opacity pruning.
@@ -1514,20 +1561,22 @@ class SplatfactoModel(Model):
         if tau_area > 0.0:
             to_remove |= (area < float(tau_area))
 
-        # Collapsed-shell pruning.
-        if tau_th > 0.0:
-            to_remove |= (thick < float(tau_th))
+        # Collapsed-shell pruning (only for shell mode).
+        if thick is not None:
+            tau_th = self._linear_schedule(
+                int(self.step),
+                float(getattr(self.config, "bezier_prune_tau_thick_start", 0.002)),
+                float(getattr(self.config, "bezier_prune_tau_thick_end", 0.0005)),
+                int(getattr(self.config, "bezier_prune_tau_thick_max_steps", 10000)),
+            )
+            if tau_th > 0.0:
+                to_remove |= (thick < float(tau_th))
 
-        # Apply removals only on currently active surfaces.
         to_remove &= active
         if bool(to_remove.any()):
-            # Avoid in-place modification of a buffer view (can break autograd if the mask is
-            # referenced by the forward graph). Instead, update the registered buffer by
-            # replacing it with a cloned tensor.
             new_active = active.clone()
             new_active[to_remove] = False
             self.bezier_surface_active = new_active
-            return
 
     def _bezier_reparam_means_scales(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute per-Gaussian means and log-scales as functions of the Bezier shell control points.
@@ -1589,6 +1638,68 @@ class SplatfactoModel(Model):
         scales_log = torch.log(scales_lin)
         return means, scales_log
 
+    def _bezier_open_resample_means_scales(self) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Re-sample Gaussian means and log-scales from the open-mode Bezier patches.
+
+        The control points in ``self.bezier_open_cp`` are trainable nn.Parameters,
+        so the returned tensors are part of the autograd graph and the rendering
+        loss will back-propagate to the control points.
+
+        Returns:
+            means: (N', 3)
+            scales_log: (N', 3) in log-space
+            keep_mask: (N,) bool tensor if surface pruning is active (None otherwise).
+                       When not None, only Gaussians where keep_mask is True are
+                       returned; the caller must apply the same mask to the other
+                       per-Gaussian arrays (opacities, quats, features, …).
+        """
+        if not hasattr(self, "bezier_open_cp"):
+            raise RuntimeError("Open-mode Bezier resample requested but bezier_open_cp is missing.")
+
+        cp = self.bezier_open_cp  # (S, G, G, 3)
+        Nu = int(self.config.bezier_num_u)
+        Nv = int(self.config.bezier_num_v)
+        X = sample_bezier_surfaces(cp, num_u=Nu, num_v=Nv)  # (S, Nu, Nv, 3)
+
+        pp = self.bezier_open_patch_idx
+        uu = self.bezier_open_u_idx
+        vv = self.bezier_open_v_idx
+
+        # Surface pruning: filter out Gaussians belonging to inactive patches.
+        keep_mask: Optional[torch.Tensor] = None
+        if (
+            bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
+            and hasattr(self, "bezier_surface_active")
+        ):
+            keep_mask = self.bezier_surface_active[pp]
+            pp = pp[keep_mask]
+            uu = uu[keep_mask]
+            vv = vv[keep_mask]
+
+        means = X[pp, uu, vv]  # (N', 3)
+
+        rho = float(self.config.bezier_rho)
+        alpha = float(self.config.bezier_alpha)
+        if rho <= 0.0:
+            raise ValueError("bezier_rho must be > 0 for open-mode reparameterization.")
+
+        du = X[:, 1:, :, :] - X[:, :-1, :, :]  # (S, Nu-1, Nv, 3)
+        dv = X[:, :, 1:, :] - X[:, :, :-1, :]  # (S, Nu, Nv-1, 3)
+
+        sigma_u_base = torch.linalg.norm(du, dim=-1) / rho  # (S, Nu-1, Nv)
+        sigma_u = torch.cat([sigma_u_base, sigma_u_base[:, -1:, :]], dim=1)  # (S, Nu, Nv)
+
+        sigma_v_base = torch.linalg.norm(dv, dim=-1) / rho  # (S, Nu, Nv-1)
+        sigma_v = torch.cat([sigma_v_base, sigma_v_base[:, :, -1:]], dim=2)  # (S, Nu, Nv)
+
+        sigma_n = torch.full_like(sigma_u, float(alpha / rho))
+
+        su = sigma_u[pp, uu, vv]
+        sv = sigma_v[pp, uu, vv]
+        sn = sigma_n[pp, uu, vv]
+        scales_log = torch.log(torch.stack([su, sv, sn], dim=-1).clamp_min(1e-6))
+        return means, scales_log, keep_mask
+
     def get_outputs(self, camera: Cameras) -> Dict[str, Union[torch.Tensor, List]]:
         """Takes in a camera and returns a dictionary of outputs.
 
@@ -1612,7 +1723,9 @@ class SplatfactoModel(Model):
         # cropping
         if self.crop_box is not None and not self.training:
             means_all = self.means
-            if bool(getattr(self.config, "bezier_reparam_enabled", False)) and hasattr(self, "bezier_shell_cp_out"):
+            if hasattr(self, "bezier_open_cp"):
+                means_all, _, _ = self._bezier_open_resample_means_scales()
+            elif bool(getattr(self.config, "bezier_reparam_enabled", False)) and hasattr(self, "bezier_shell_cp_out"):
                 means_all, _ = self._bezier_reparam_means_scales()
             crop_ids = self.crop_box.within(means_all).squeeze()
             if crop_ids.sum() == 0:
@@ -1629,10 +1742,11 @@ class SplatfactoModel(Model):
         means_all = self.means
         scales_all = self.scales
 
-        # If we are doing surface pruning WITHOUT reparam, and we have a per-Gaussian -> surface mapping,
-        # filter Gaussians belonging to inactive surfaces.
+        # Shell-mode surface pruning WITHOUT reparam: filter Gaussians of inactive surfaces.
+        # (Open-mode pruning is handled inside _bezier_open_resample_means_scales below.)
         if (
             bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
+            and (not hasattr(self, "bezier_open_cp"))
             and (not bool(getattr(self.config, "bezier_reparam_enabled", False)))
             and hasattr(self, "bezier_surface_active")
         ):
@@ -1652,9 +1766,17 @@ class SplatfactoModel(Model):
                 quats_all = quats_all[keep]
                 means_all = means_all[keep]
                 scales_all = scales_all[keep]
-        if bool(getattr(self.config, "bezier_reparam_enabled", False)) and hasattr(self, "bezier_shell_cp_out"):
+        # Open-mode Bezier reparameterization: resample means/scales from the
+        # (updated) control points every forward pass.
+        if hasattr(self, "bezier_open_cp"):
+            means_all, scales_all, open_keep = self._bezier_open_resample_means_scales()
+            if open_keep is not None:
+                opacities_all = opacities_all[open_keep]
+                features_dc_all = features_dc_all[open_keep]
+                features_rest_all = features_rest_all[open_keep]
+                quats_all = quats_all[open_keep]
+        elif bool(getattr(self.config, "bezier_reparam_enabled", False)) and hasattr(self, "bezier_shell_cp_out"):
             means_all, scales_all = self._bezier_reparam_means_scales()
-            # If we pruned surfaces, we must prune the other per-Gaussian arrays consistently using the same keep mask.
             if bool(getattr(self.config, "bezier_surface_pruning_enabled", False)) and hasattr(self, "bezier_surface_active"):
                 keep = self.bezier_surface_active[self.bezier_reparam_shell_idx]
                 opacities_all = opacities_all[keep]
@@ -1745,7 +1867,12 @@ class SplatfactoModel(Model):
             # radius_clip=3.0,
         )
         if self.training:
-            if not (bool(getattr(self.config, "bezier_reparam_enabled", False)) or bool(getattr(self.config, "bezier_surface_pruning_enabled", False))):
+            skip_densify = (
+                hasattr(self, "bezier_open_cp")
+                or bool(getattr(self.config, "bezier_reparam_enabled", False))
+                or bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
+            )
+            if not skip_densify:
                 self.strategy.step_pre_backward(
                     self.gauss_params, self.optimizers, self.strategy_state, self.step, self.info
                 )

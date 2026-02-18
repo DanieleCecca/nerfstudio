@@ -348,6 +348,49 @@ def sample_paired_bezier_surfaces(
     return X_rbuvc.permute(1, 0, 2, 3, 4).contiguous()
 
 
+def sample_bezier_surfaces(
+    control_points: torch.Tensor,
+    *,
+    num_u: int = 20,
+    num_v: int = 20,
+) -> torch.Tensor:
+    """Batch-evaluate single Bezier surfaces on a uniform (u,v) grid.
+
+    This is the single-surface counterpart of :func:`sample_paired_bezier_surfaces`
+    and is used by the open-mode reparameterization path.
+
+    Args:
+        control_points: (m+1, n+1, 3) or (B, m+1, n+1, 3)
+        num_u: number of uniform samples along u in [0, 1]
+        num_v: number of uniform samples along v in [0, 1]
+
+    Returns:
+        X: (B, num_u, num_v, 3) sampled surface points.
+    """
+    if control_points.ndim == 3:
+        cp = control_points.unsqueeze(0)
+    elif control_points.ndim == 4:
+        cp = control_points
+    else:
+        raise ValueError(
+            f"control_points must have shape (m,n,3) or (B,m,n,3), got {tuple(control_points.shape)}"
+        )
+    if cp.shape[-1] != 3:
+        raise ValueError("control points must have last dim = 3.")
+
+    m = int(cp.shape[-3]) - 1
+    n = int(cp.shape[-2]) - 1
+    device = cp.device
+    dtype = cp.dtype
+
+    u = torch.linspace(0.0, 1.0, steps=int(num_u), device=device, dtype=dtype)
+    v = torch.linspace(0.0, 1.0, steps=int(num_v), device=device, dtype=dtype)
+    Bu = BezierSurfacePatch.bernstein_basis(m, u)  # (m+1, U)
+    Bv = BezierSurfacePatch.bernstein_basis(n, v)  # (n+1, V)
+
+    return torch.einsum("iu,jv,bijc->buvc", Bu, Bv, cp)
+
+
 def bezier_shell_topo_losses_from_samples(
     X: torch.Tensor,
     *,
@@ -441,58 +484,45 @@ def _knn_indices(points: torch.Tensor, center: torch.Tensor, k: int) -> torch.Te
     return torch.topk(d2, k=k, largest=False).indices
 
 
-def _select_4x4_control_points(neighbors: torch.Tensor, grid_size: int = 4) -> torch.Tensor:
-    """Select grid_size^2 control points from neighbors by fitting a local 2D frame (PCA) and snapping to a grid."""
-    if grid_size != 4:
-        raise NotImplementedError("Currently only grid_size=4 (16 control points) is supported.")
-    if neighbors.shape[0] < 16:
-        raise ValueError("Need at least 16 points to form a 4x4 control grid.")
+def _create_planar_control_points(neighbors: torch.Tensor, grid_size: int = 4) -> torch.Tensor:
+    """Create a regular planar grid of Bezier control points via PCA.
 
+    Instead of snapping to existing point cloud points, this builds a truly
+    independent grid of control points that lie on the best-fit plane of the
+    input neighbourhood.  The grid covers the full extent of the projected
+    points along the two principal axes of variance.
+
+    Args:
+        neighbors: (K, 3) 3D points in the local neighbourhood.
+        grid_size: number of control points per axis (default 4 → 4×4 = 16 CPs).
+
+    Returns:
+        cp: (grid_size, grid_size, 3) planar control points.
+    """
     pts = neighbors
     device = pts.device
     dtype = pts.dtype
 
-    # Local frame via PCA (use first two principal components as u/v axes).
-    mu = pts.mean(dim=0, keepdim=True)
-    X = pts - mu
-    # covariance 3x3
+    mu = pts.mean(dim=0)  # (3,)
+    X = pts - mu[None, :]  # (K, 3)
+
     C = (X.transpose(0, 1) @ X) / max(1, int(pts.shape[0]) - 1)
-    # eigenvectors sorted by eigenvalue ascending; take last two for largest variance
-    evals, evecs = torch.linalg.eigh(C)
-    u_axis = evecs[:, -1]
-    v_axis = evecs[:, -2]
+    _evals, evecs = torch.linalg.eigh(C)
+    u_axis = evecs[:, -1]  # largest-variance direction
+    v_axis = evecs[:, -2]  # second-largest
 
-    uv = torch.stack([X @ u_axis, X @ v_axis], dim=-1)  # (K,2)
-    u = uv[:, 0]
-    v = uv[:, 1]
+    proj_u = X @ u_axis  # (K,)
+    proj_v = X @ v_axis  # (K,)
 
-    # grid targets via quartiles on u and v
-    q = torch.tensor([0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0], device=device, dtype=dtype)
-    u_q = torch.quantile(u, q)
-    v_q = torch.quantile(v, q)
+    u_lin = torch.linspace(float(proj_u.min()), float(proj_u.max()), grid_size, device=device, dtype=dtype)
+    v_lin = torch.linspace(float(proj_v.min()), float(proj_v.max()), grid_size, device=device, dtype=dtype)
 
-    # For each (i,j), pick nearest 2D point to (u_q[i], v_q[j]) with uniqueness.
-    chosen: List[int] = []
-    chosen_mask = torch.zeros((pts.shape[0],), dtype=torch.bool, device=device)
-    for i in range(4):
-        for j in range(4):
-            target = torch.tensor([u_q[i], v_q[j]], device=device, dtype=dtype)
-            d2 = ((uv - target[None, :]) ** 2).sum(dim=-1)
-            # get a few candidates in ascending distance
-            cand = torch.argsort(d2)
-            picked = None
-            for idx in cand.tolist()[:64]:
-                if not bool(chosen_mask[idx]):
-                    picked = idx
-                    break
-            if picked is None:
-                # fallback: first available
-                avail = torch.nonzero(~chosen_mask, as_tuple=False)
-                picked = int(avail[0].item())
-            chosen_mask[picked] = True
-            chosen.append(int(picked))
-
-    cp = pts[torch.tensor(chosen, device=device, dtype=torch.long)].view(4, 4, 3)
+    uu, vv = torch.meshgrid(u_lin, v_lin, indexing="ij")  # (G, G)
+    cp = (
+        mu[None, None, :]
+        + uu[:, :, None] * u_axis[None, None, :]
+        + vv[:, :, None] * v_axis[None, None, :]
+    )
     return cp
 
 
@@ -519,8 +549,6 @@ def generate_bezier_patches_from_labeled_points(
         raise ValueError("semantic_labels must have shape (N,) matching points_xyz.")
     if cfg.knn_k < cfg.control_grid_size * cfg.control_grid_size:
         raise ValueError("knn_k must be >= control_grid_size^2 (need enough points for control points).")
-    if cfg.control_grid_size != 4:
-        raise NotImplementedError("Currently only control_grid_size=4 (16 control points) is supported.")
 
     device = points_xyz.device if cfg.device is None else torch.device(cfg.device)
     pts_all = points_xyz.to(device=device)
@@ -551,7 +579,7 @@ def generate_bezier_patches_from_labeled_points(
             center = pts[int(ci)]
             nn_idx = _knn_indices(pts, center, k=int(cfg.knn_k))
             neigh = pts[nn_idx]
-            cp = _select_4x4_control_points(neigh, grid_size=4)
+            cp = _create_planar_control_points(neigh, grid_size=int(cfg.control_grid_size))
             patches.append(BezierSurfacePatch(cp))
 
         out[lab_i] = patches
