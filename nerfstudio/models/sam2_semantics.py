@@ -754,7 +754,12 @@ def compute_seed_semantic_labels_from_grounded_sam2_all_images(
     all_pidx: List[torch.Tensor] = []
     all_pixlab: List[torch.Tensor] = []
 
-    for ds_idx in image_indices:
+    from nerfstudio.utils.rich_utils import CONSOLE
+
+    n_total = len(image_indices)
+    n_with_detections = 0
+
+    for img_i, ds_idx in enumerate(image_indices):
         target_im_id = int(colmap_im_ids[int(ds_idx)].item())
         if target_im_id < 0:
             continue
@@ -810,7 +815,18 @@ def compute_seed_semantic_labels_from_grounded_sam2_all_images(
                 except Exception:
                     pass
 
-        # Save per-image results (best-effort).
+        has_labels = bool((label_map > 0).any())
+        if has_labels:
+            n_with_detections += 1
+
+        # Save labelmap .npy FIRST (independently of visualization).
+        if bool(config.save_labelmap_npy):
+            try:
+                np.save(out_dir / f"labelmap_{int(ds_idx):05d}.npy", label_map.detach().cpu().numpy())
+            except Exception as e:
+                CONSOLE.log(f"[yellow]Warning: failed to save labelmap_{int(ds_idx):05d}.npy: {e}[/yellow]")
+
+        # Save visualizations (best-effort, never blocks training).
         try:
             _save_labelmap_visualizations(
                 out_dir=out_dir,
@@ -820,11 +836,14 @@ def compute_seed_semantic_labels_from_grounded_sam2_all_images(
                 label_names=label_names,
                 detections=detections,
             )
-            if bool(config.save_labelmap_npy):
-                np.save(out_dir / f"labelmap_{int(ds_idx):05d}.npy", label_map.detach().cpu().numpy())
         except Exception:
-            # Visualization saving should never block training.
             pass
+
+        if (img_i + 1) % max(1, n_total // 10) == 0 or (img_i + 1) == n_total:
+            CONSOLE.log(
+                f"[cyan]GroundedSAM2 progress: {img_i + 1}/{n_total} images "
+                f"({n_with_detections} with detections)[/cyan]"
+            )
 
         # Vote labels for 3D points using COLMAP 2D tracks for this image.
         matches = points_image_ids == target_im_id

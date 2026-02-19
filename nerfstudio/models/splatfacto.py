@@ -1023,9 +1023,14 @@ class SplatfactoModel(Model):
                     (torch.rand((self.config.num_random, 3)) - 0.5) * self.config.random_scale
                 )
             means = means_param
-            distances, _ = k_nearest_sklearn(means_param.data, 3)
-            # find the average of the three nearest neighbors for each point and use that as the scale
-            avg_dist = distances.mean(dim=-1, keepdim=True)
+            n_pts = int(means_param.shape[0])
+            knn_k = min(3, max(1, n_pts - 1))
+            if knn_k >= 1:
+                distances, _ = k_nearest_sklearn(means_param.data, knn_k)
+                avg_dist = distances.mean(dim=-1, keepdim=True)
+                avg_dist = avg_dist.clamp(min=1e-6)
+            else:
+                avg_dist = torch.full((n_pts, 1), 0.01)
             scales_param = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
             scales = scales_param
             num_points = int(means_param.shape[0])
