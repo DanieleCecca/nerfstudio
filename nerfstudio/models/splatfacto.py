@@ -57,6 +57,7 @@ from nerfstudio.model_components.bezier_surface import (
     sample_bezier_surfaces,
     sample_paired_bezier_surfaces,
 )
+from nerfstudio.model_components.gaussian_mesh import export_gaussian_mesh_as_ply
 
 
 def resize_image(image: torch.Tensor, d: int):
@@ -200,6 +201,14 @@ class SplatfactoModelConfig(ModelConfig):
 
     da3_use_half: bool = True
     """Use fp16 inference for DA3 on CUDA (if available)."""
+
+    # --- Segmentation-aware seed filtering (applies to classic init path) ---
+    filter_seeds_by_segmentation: bool = False
+    """If True and ``metadata['seed_semantic_labels']`` is available, remove background
+    seed points (label == 0) even when ``bezier_init_enabled`` is False (classic init).
+    The Gaussian model is then trained only on the object of interest.
+    Combine with a per-pixel mask in the DataManager for pixel-wise masked loss.
+    """
 
     # --- Bezier-surface init from semantically-labeled COLMAP seed points (optional) ---
     bezier_init_enabled: bool = False
@@ -445,6 +454,24 @@ class SplatfactoModelConfig(ModelConfig):
     Files are saved under ``<export_end_of_training_dirname>/bezier_meshes/``.
     Uses the same (num_u, num_v) sampling resolution as the Gaussian placement grid.
     """
+
+    export_gaussian_mesh: bool = False
+    """If True, extract a triangle mesh from the Gaussian field via volumetric
+    density evaluation + marching cubes at end of training.  Requires
+    ``scikit-image`` and ``open3d``.
+    """
+
+    gaussian_mesh_resolution: int = 128
+    """Grid resolution per axis for the volumetric density evaluation (e.g. 128 or 256)."""
+
+    gaussian_mesh_isovalue: float = 1.0
+    """Iso-surface threshold τ for marching cubes."""
+
+    gaussian_mesh_culling_sigma: float = 3.0
+    """Culling radius in multiples of σ for the per-chunk Gaussian AABB test."""
+
+    gaussian_mesh_chunk_size: int = 16**3
+    """Grid points per evaluation chunk (lower = less GPU memory)."""
 
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     """
@@ -961,8 +988,36 @@ class SplatfactoModel(Model):
                 self.config.bezier_surface_pruning_enabled = False
 
         if not bezier_init_done:
-            if self.seed_points is not None and not self.config.random_init:
-                means_param = torch.nn.Parameter(self.seed_points[0])  # (Location, Color)
+            _sp = self.seed_points  # may be None; local copy we can filter
+
+            # ── Optional: keep only object seeds (label > 0) for the classic path ──
+            if (
+                self.config.filter_seeds_by_segmentation
+                and _sp is not None
+                and not self.config.random_init
+                and seed_sem is not None
+            ):
+                _labels = torch.as_tensor(seed_sem).detach().cpu().to(torch.int64)
+                if int(_labels.shape[0]) == int(_sp[0].shape[0]):
+                    _obj = _labels > 0
+                    if bool(_obj.any()):
+                        _sp0 = _sp[0][_obj]
+                        _sp1 = _sp[1][_obj] if int(_sp[1].shape[0]) == int(_sp[0].shape[0]) else _sp[1]
+                        _sp = (_sp0, _sp1)
+                        CONSOLE.log(
+                            f"[green]Classic init: keeping {int(_obj.sum())}/{int(_labels.shape[0])} "
+                            f"object seeds (filtered by segmentation).[/green]"
+                        )
+                    else:
+                        CONSOLE.log("[yellow]filter_seeds_by_segmentation: all labels are 0, keeping all seeds.[/yellow]")
+                else:
+                    CONSOLE.log(
+                        f"[yellow]filter_seeds_by_segmentation: label count mismatch "
+                        f"({int(_labels.shape[0])} vs {int(_sp[0].shape[0])}), skipping filter.[/yellow]"
+                    )
+
+            if _sp is not None and not self.config.random_init:
+                means_param = torch.nn.Parameter(_sp[0])
             else:
                 means_param = torch.nn.Parameter(
                     (torch.rand((self.config.num_random, 3)) - 0.5) * self.config.random_scale
@@ -979,18 +1034,17 @@ class SplatfactoModel(Model):
             dim_sh = num_sh_bases(self.config.sh_degree)
 
             if (
-                self.seed_points is not None
+                _sp is not None
                 and not self.config.random_init
-                # We can have colors without points.
-                and self.seed_points[1].shape[0] > 0
+                and _sp[1].shape[0] > 0
             ):
-                shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().cuda()
+                shs = torch.zeros((_sp[1].shape[0], dim_sh, 3)).float().cuda()
                 if self.config.sh_degree > 0:
-                    shs[:, 0, :3] = RGB2SH(self.seed_points[1] / 255)
+                    shs[:, 0, :3] = RGB2SH(_sp[1] / 255)
                     shs[:, 1:, 3:] = 0.0
                 else:
                     CONSOLE.log("use color only optimization with sigmoid activation")
-                    shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
+                    shs[:, 0, :3] = torch.logit(_sp[1] / 255, eps=1e-10)
                 features_dc = torch.nn.Parameter(shs[:, 0, :])
                 features_rest = torch.nn.Parameter(shs[:, 1:, :])
             else:
@@ -1215,6 +1269,14 @@ class SplatfactoModel(Model):
                     args=[training_callback_attributes],
                 )
             )
+        if self.config.export_gaussian_mesh:
+            cbs.append(
+                TrainingCallback(
+                    [TrainingCallbackLocation.AFTER_TRAIN],
+                    self._export_gaussian_mesh,
+                    args=[training_callback_attributes],
+                )
+            )
         return cbs
 
     def step_cb(self, optimizers: Optimizers, step):
@@ -1428,6 +1490,103 @@ class SplatfactoModel(Model):
                 CONSOLE.log(f"[green]Exported {len(paths)} shell-mode Bezier mesh file(s) to {out_dir}[/green]")
         except Exception as e:
             CONSOLE.log(f"[yellow]Bezier mesh export failed: {e}[/yellow]")
+
+    @torch.no_grad()
+    def _export_gaussian_mesh(self, training_callback_attributes: TrainingCallbackAttributes, step: int):
+        """Extract a triangle mesh from the Gaussian field and export as PLY at end of training.
+
+        Replicates the same means / scales / opacities / quats resolution logic
+        used by ``get_outputs`` (open-mode Bezier resample, shell reparam, surface
+        pruning) so that the exported mesh is faithful to the final rendering.
+        """
+        trainer = training_callback_attributes.trainer
+        if trainer is not None and getattr(trainer, "config", None) is not None:
+            try:
+                base_dir = Path(trainer.config.get_base_dir())
+            except Exception:
+                base_dir = Path(".")
+        else:
+            base_dir = Path(".")
+
+        out_dir = base_dir / self.config.export_end_of_training_dirname / "gaussian_mesh"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Resolve current means / scales (same logic as get_outputs) ──
+        opacities_all = self.opacities
+        quats_all = self.quats
+
+        if hasattr(self, "bezier_open_cp"):
+            means_all, scales_log_all, open_keep = self._bezier_open_resample_means_scales()
+            if open_keep is not None:
+                opacities_all = opacities_all[open_keep]
+                quats_all = quats_all[open_keep]
+        elif (
+            bool(getattr(self.config, "bezier_reparam_enabled", False))
+            and hasattr(self, "bezier_shell_cp_out")
+        ):
+            means_all, scales_log_all = self._bezier_reparam_means_scales()
+            if (
+                bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
+                and hasattr(self, "bezier_surface_active")
+                and hasattr(self, "bezier_reparam_shell_idx")
+            ):
+                keep = self.bezier_surface_active[self.bezier_reparam_shell_idx]
+                opacities_all = opacities_all[keep]
+                quats_all = quats_all[keep]
+        else:
+            means_all = self.means
+            scales_log_all = self.scales
+            # Shell-mode surface pruning WITHOUT reparam
+            if (
+                bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
+                and hasattr(self, "bezier_surface_active")
+            ):
+                ss_map = None
+                for attr in (
+                    "bezier_surface_gaussian_surface_idx",
+                    "bezier_reparam_shell_idx",
+                    "bezier_attach_shell_idx",
+                ):
+                    if hasattr(self, attr):
+                        ss_map = getattr(self, attr)
+                        break
+                if ss_map is not None and int(ss_map.shape[0]) == int(means_all.shape[0]):
+                    keep = self.bezier_surface_active[ss_map]
+                    means_all = means_all[keep]
+                    scales_log_all = scales_log_all[keep]
+                    opacities_all = opacities_all[keep]
+                    quats_all = quats_all[keep]
+
+        scales_exp = torch.exp(scales_log_all)
+        opacities_sig = torch.sigmoid(opacities_all).squeeze(-1)
+
+        if means_all.shape[0] == 0:
+            CONSOLE.log("[yellow]Gaussian mesh export skipped: no active Gaussians.[/yellow]")
+            return
+
+        CONSOLE.log(
+            f"[green]Extracting Gaussian mesh ({self.config.gaussian_mesh_resolution}³, "
+            f"τ={self.config.gaussian_mesh_isovalue}, {means_all.shape[0]} Gaussians) …[/green]"
+        )
+
+        try:
+            path = export_gaussian_mesh_as_ply(
+                means_all.detach(),
+                scales_exp.detach(),
+                quats_all.detach(),
+                opacities_sig.detach(),
+                out_dir / "gaussian_mesh.ply",
+                resolution=int(self.config.gaussian_mesh_resolution),
+                isovalue=float(self.config.gaussian_mesh_isovalue),
+                culling_sigma=float(self.config.gaussian_mesh_culling_sigma),
+                chunk_size=int(self.config.gaussian_mesh_chunk_size),
+            )
+            if path is not None:
+                CONSOLE.log(f"[green]Gaussian mesh exported to {path}[/green]")
+            else:
+                CONSOLE.log("[yellow]Gaussian mesh extraction returned no result.[/yellow]")
+        except Exception as e:
+            CONSOLE.log(f"[yellow]Gaussian mesh export failed: {e}[/yellow]")
 
     def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
         # Here we explicitly use the means, scales as parameters so that the user can override this function and
