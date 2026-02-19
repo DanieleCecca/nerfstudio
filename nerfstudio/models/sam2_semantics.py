@@ -726,6 +726,12 @@ def compute_seed_semantic_labels_from_grounded_sam2_all_images(
             if not (0 <= i < num_images):
                 raise ValueError(f"image_indices contains out-of-range index {i} (num_images={num_images})")
 
+        # subito dopo: image_indices = list(range(num_images)) oppure image_indices = [...]
+    import logging
+    logging.getLogger(__name__).info(
+        "GroundedSAM2: num_images=%d, len(image_indices)=%d, image_indices[:5]=%s",
+        num_images, len(image_indices), image_indices[:5] if len(image_indices) >= 5 else image_indices
+    )
     # Stable label ids per prompt.
     base_label = max(1, int(config.label_id))
     label_names: Dict[int, str] = {base_label + i: str(p) for i, p in enumerate(config.text_prompts)}
