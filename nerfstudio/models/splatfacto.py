@@ -51,6 +51,7 @@ from nerfstudio.model_components.bezier_surface import (
     BezierPatchGeneratorConfig,
     PairedBezierSurfacePatch,
     bezier_shell_topo_losses_from_samples,
+    export_bezier_patches_as_ply,
     fit_bezier_control_points_from_grid,
     generate_bezier_patches_from_labeled_points,
     sample_bezier_surfaces,
@@ -438,6 +439,13 @@ class SplatfactoModelConfig(ModelConfig):
 
     export_end_of_training_num_cameras: int = 10
     """How many training cameras to export at end of training (sampled randomly without replacement)."""
+
+    export_bezier_meshes: bool = False
+    """If True, export Bezier surface patches as triangle-mesh PLY files at the end of training.
+    Files are saved under ``<export_end_of_training_dirname>/bezier_meshes/``.
+    Uses the same (num_u, num_v) sampling resolution as the Gaussian placement grid.
+    """
+
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     """
     Classic mode of rendering will use the EWA volume splatting with a [0.3, 0.3] screen space blurring kernel. This
@@ -1199,6 +1207,14 @@ class SplatfactoModel(Model):
                     args=[training_callback_attributes],
                 )
             )
+        if self.config.export_bezier_meshes:
+            cbs.append(
+                TrainingCallback(
+                    [TrainingCallbackLocation.AFTER_TRAIN],
+                    self._export_bezier_meshes,
+                    args=[training_callback_attributes],
+                )
+            )
         return cbs
 
     def step_cb(self, optimizers: Optimizers, step):
@@ -1365,6 +1381,53 @@ class SplatfactoModel(Model):
 
         if was_training:
             self.train()
+
+    @torch.no_grad()
+    def _export_bezier_meshes(self, training_callback_attributes: TrainingCallbackAttributes, step: int):
+        """Export Bezier surface patches as triangle-mesh PLY files at end of training."""
+        has_open = hasattr(self, "bezier_open_cp")
+        has_shell = hasattr(self, "bezier_shell_cp_out") and hasattr(self, "bezier_shell_cp_in")
+        if not (has_open or has_shell):
+            CONSOLE.log("[yellow]Bezier mesh export skipped: no Bezier control points found.[/yellow]")
+            return
+
+        trainer = training_callback_attributes.trainer
+        if trainer is not None and getattr(trainer, "config", None) is not None:
+            try:
+                base_dir = Path(trainer.config.get_base_dir())
+            except Exception:
+                base_dir = Path(".")
+        else:
+            base_dir = Path(".")
+
+        out_dir = base_dir / self.config.export_end_of_training_dirname / "bezier_meshes"
+        Nu = int(self.config.bezier_num_u)
+        Nv = int(self.config.bezier_num_v)
+
+        try:
+            if has_open:
+                paths = export_bezier_patches_as_ply(
+                    self.bezier_open_cp.detach(),
+                    out_dir,
+                    num_u=Nu,
+                    num_v=Nv,
+                    prefix="bezier_open",
+                )
+                CONSOLE.log(f"[green]Exported {len(paths)} open-mode Bezier mesh file(s) to {out_dir}[/green]")
+
+            if has_shell:
+                paths = export_bezier_patches_as_ply(
+                    self.bezier_shell_cp_out.detach(),
+                    out_dir,
+                    num_u=Nu,
+                    num_v=Nv,
+                    control_points_in=self.bezier_shell_cp_in.detach(),
+                    num_r=int(self.config.bezier_num_r),
+                    prefix="bezier_shell",
+                )
+                CONSOLE.log(f"[green]Exported {len(paths)} shell-mode Bezier mesh file(s) to {out_dir}[/green]")
+        except Exception as e:
+            CONSOLE.log(f"[yellow]Bezier mesh export failed: {e}[/yellow]")
 
     def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
         # Here we explicitly use the means, scales as parameters so that the user can override this function and

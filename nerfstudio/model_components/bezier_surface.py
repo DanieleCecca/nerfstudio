@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
 import torch
@@ -601,4 +602,146 @@ def example_usage() -> None:  # pragma: no cover
         print("label", lab, "num_patches", len(plist))
         surf = plist[0].sample(10, 10)
         print("surface sample shape:", tuple(surf.shape))
+
+
+# ---------------------------------------------------------------------------
+# Mesh export utilities
+# ---------------------------------------------------------------------------
+
+def _grid_triangles(num_u: int, num_v: int):
+    """Return (F, 3) int32 triangle indices for a (num_u x num_v) vertex grid."""
+    import numpy as np
+
+    faces = []
+    for i in range(num_u - 1):
+        for j in range(num_v - 1):
+            a = i * num_v + j
+            b = (i + 1) * num_v + j
+            c = i * num_v + (j + 1)
+            d = (i + 1) * num_v + (j + 1)
+            faces.append([a, b, c])
+            faces.append([b, d, c])
+    return np.asarray(faces, dtype=np.int32)
+
+
+@torch.no_grad()
+def export_bezier_patches_as_ply(
+    control_points: torch.Tensor,
+    output_dir: Path,
+    *,
+    num_u: int = 40,
+    num_v: int = 40,
+    control_points_in: Optional[torch.Tensor] = None,
+    num_r: int = 5,
+    prefix: str = "bezier_patch",
+) -> List[Path]:
+    """Export Bezier surface patches as triangle-mesh PLY files.
+
+    For each patch in the batch the surface is sampled on a uniform (u, v) grid
+    and triangulated into a mesh.  When *control_points_in* is provided (shell
+    mode), the outer surface, the inner surface, and the full shell (all R
+    interpolated layers merged) are exported per patch.
+
+    Requires Open3D for mesh construction and PLY I/O.
+
+    Args:
+        control_points: (S, m+1, n+1, 3) or (m+1, n+1, 3) outer / open CPs.
+        output_dir: destination directory (created if missing).
+        num_u: uniform samples along u for the mesh.
+        num_v: uniform samples along v for the mesh.
+        control_points_in: optional (same shape) inner CPs for shell mode.
+        num_r: interpolated layers between out/in (shell mode, >= 2).
+        prefix: filename prefix for the exported PLY files.
+
+    Returns:
+        List of Path objects for the written files (empty if open3d is missing).
+    """
+    import logging
+
+    try:
+        import open3d as o3d  # type: ignore[import-untyped]
+    except ImportError:
+        logging.error(
+            "open3d is required to export Bezier patches as PLY meshes. "
+            "Install it with: pip install open3d"
+        )
+        return []
+
+    import numpy as np
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    faces = _grid_triangles(num_u, num_v)
+    saved: List[Path] = []
+
+    def _save_mesh(verts_np: np.ndarray, faces_np: np.ndarray, name: str) -> Path:
+        p = output_dir / name
+        mesh = o3d.geometry.TriangleMesh(
+            vertices=o3d.utility.Vector3dVector(verts_np.astype(np.float64)),
+            triangles=o3d.utility.Vector3iVector(faces_np.astype(np.int32)),
+        )
+        mesh.compute_vertex_normals()
+        o3d.io.write_triangle_mesh(str(p), mesh)
+        saved.append(p)
+        return p
+
+    # Ensure batch dimension
+    cp = control_points
+    if cp.ndim == 3:
+        cp = cp.unsqueeze(0)
+
+    X = sample_bezier_surfaces(cp, num_u=num_u, num_v=num_v)  # (S, Nu, Nv, 3)
+    S = int(X.shape[0])
+
+    all_verts: List[np.ndarray] = []
+    all_faces: List[np.ndarray] = []
+    offset = 0
+    for s in range(S):
+        v = X[s].detach().cpu().numpy().reshape(-1, 3)
+        suffix = "" if control_points_in is None else "_outer"
+        _save_mesh(v, faces, f"{prefix}_{s:03d}{suffix}.ply")
+        all_verts.append(v)
+        all_faces.append(faces + offset)
+        offset += v.shape[0]
+
+    if S > 1:
+        suffix = "" if control_points_in is None else "_outer"
+        _save_mesh(
+            np.concatenate(all_verts, axis=0),
+            np.concatenate(all_faces, axis=0),
+            f"{prefix}_all{suffix}.ply",
+        )
+
+    # ── Shell mode: inner surfaces + interpolated layers ──
+    if control_points_in is not None:
+        cp_in = control_points_in
+        if cp_in.ndim == 3:
+            cp_in = cp_in.unsqueeze(0)
+
+        X_in = sample_bezier_surfaces(cp_in, num_u=num_u, num_v=num_v)
+        for s in range(S):
+            v = X_in[s].detach().cpu().numpy().reshape(-1, 3)
+            _save_mesh(v, faces, f"{prefix}_{s:03d}_inner.ply")
+
+        if num_r >= 2:
+            X_layers = sample_paired_bezier_surfaces(
+                cp, cp_in, num_r=num_r, num_u=num_u, num_v=num_v,
+            )  # (S, R, Nu, Nv, 3)
+            for s in range(S):
+                lv: List[np.ndarray] = []
+                lf: List[np.ndarray] = []
+                off = 0
+                for r in range(int(X_layers.shape[1])):
+                    v = X_layers[s, r].detach().cpu().numpy().reshape(-1, 3)
+                    lv.append(v)
+                    lf.append(faces + off)
+                    off += v.shape[0]
+                _save_mesh(
+                    np.concatenate(lv, axis=0),
+                    np.concatenate(lf, axis=0),
+                    f"{prefix}_{s:03d}_shell.ply",
+                )
+
+    return saved
 
