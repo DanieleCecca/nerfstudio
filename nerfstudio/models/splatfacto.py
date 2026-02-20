@@ -232,6 +232,9 @@ class SplatfactoModelConfig(ModelConfig):
     bezier_num_v: int = 20
     """Nv: number of uniform samples along v for each Bezier patch."""
 
+    bezier_texture_size: int = 8
+    """Size T of the per-patch texture grid (T x T x 4 RGBA). Color at (u,v) is texture_i[u_idx, v_idx]."""
+
     bezier_rho: float = 20.0
     """Global density/overlap parameter rho (divides tangential distances)."""
 
@@ -277,6 +280,9 @@ class SplatfactoModelConfig(ModelConfig):
 
     bezier_topo_delta: float = 0.0
     """Minimum thickness delta for thickness loss (0 disables)."""
+
+    bezier_open_cp_l2_lambda: float = 0.0
+    """Weight for L2 regularizer on open Bezier control points (reduces excessive deformations)."""
 
     # --- Bezier shell <-> Gaussian attachment (optional) ---
     bezier_attach_loss_enabled: bool = False
@@ -881,6 +887,10 @@ class SplatfactoModel(Model):
                     persistent=True,
                 )
                 S_open = int(self.bezier_open_cp.shape[0])
+                T_tex = int(getattr(self.config, "bezier_texture_size", 8))
+                self.patch_textures = torch.nn.Parameter(
+                    torch.rand(S_open, T_tex, T_tex, 4, dtype=torch.float32) * 0.5
+                )
                 if bool(getattr(self.config, "bezier_surface_pruning_enabled", False)):
                     self.register_buffer(
                         "bezier_surface_active",
@@ -1601,10 +1611,12 @@ class SplatfactoModel(Model):
             for name in ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]
         }
 
-        # Open-mode Bezier: control points replace means/scales in the optimizer.
+        # Open-mode Bezier: control points replace means/scales; per-patch textures drive color/opacity.
         if hasattr(self, "bezier_open_cp"):
             gps["means"] = [self.bezier_open_cp]
             gps.pop("scales", None)
+            if hasattr(self, "patch_textures"):
+                gps["patch_textures"] = [self.patch_textures]
             return gps
 
         # Shell-mode: trainable shell CPs (topology / attach / reparam).
@@ -2002,6 +2014,38 @@ class SplatfactoModel(Model):
                 features_dc_all = features_dc_all[open_keep]
                 features_rest_all = features_rest_all[open_keep]
                 quats_all = quats_all[open_keep]
+            # Per-(u,v) color/opacity from patch textures: rgba = texture_i[u_idx, v_idx]
+            if hasattr(self, "patch_textures"):
+                pp = self.bezier_open_patch_idx
+                uu = self.bezier_open_u_idx
+                vv = self.bezier_open_v_idx
+                if open_keep is not None:
+                    pp = pp[open_keep]
+                    uu = uu[open_keep]
+                    vv = vv[open_keep]
+                Nu = int(self.config.bezier_num_u)
+                Nv = int(self.config.bezier_num_v)
+                T_tex = int(self.config.bezier_texture_size)
+                tu = (uu * (T_tex - 1) / max(1, Nu - 1)).long().clamp(0, T_tex - 1)
+                tv = (vv * (T_tex - 1) / max(1, Nv - 1)).long().clamp(0, T_tex - 1)
+                rgba = self.patch_textures[pp, tu, tv]  # (N, 4)
+                rgba_01 = torch.sigmoid(rgba)
+                dim_sh = num_sh_bases(self.config.sh_degree)
+                if self.config.sh_degree > 0:
+                    features_dc_all = RGB2SH(rgba_01[:, :3])
+                    features_rest_all = torch.zeros(
+                        pp.shape[0], dim_sh - 1, 3,
+                        device=features_dc_all.device, dtype=features_dc_all.dtype,
+                    )
+                else:
+                    features_dc_all = torch.logit(rgba_01[:, :3].clamp(1e-6, 1.0 - 1e-6), eps=1e-10)
+                    features_rest_all = torch.zeros(
+                        pp.shape[0], dim_sh - 1, 3,
+                        device=features_dc_all.device, dtype=features_dc_all.dtype,
+                    )
+                opacities_all = torch.logit(
+                    rgba_01[:, 3:4].clamp(1e-6, 1.0 - 1e-6), eps=1e-6
+                )
         elif bool(getattr(self.config, "bezier_reparam_enabled", False)) and hasattr(self, "bezier_shell_cp_out"):
             means_all, scales_all = self._bezier_reparam_means_scales()
             if bool(getattr(self.config, "bezier_surface_pruning_enabled", False)) and hasattr(self, "bezier_surface_active"):
@@ -2397,6 +2441,15 @@ class SplatfactoModel(Model):
                 except Exception as e:
                     # Keep training stable if something goes wrong.
                     CONSOLE.log(f"[yellow]Warning: Bezier topo loss failed (skipping): {e}[/yellow]")
+
+            # Optional: L2 regularizer on open Bezier control points (reduces excessive deformations).
+            if (
+                hasattr(self, "bezier_open_cp")
+                and float(getattr(self.config, "bezier_open_cp_l2_lambda", 0.0)) != 0.0
+            ):
+                lambda_reg = float(self.config.bezier_open_cp_l2_lambda)
+                loss_reg = lambda_reg * (self.bezier_open_cp**2).mean()
+                loss_dict["bezier_cp_l2_loss"] = loss_reg
 
             # Optional: attach (a subset of) Gaussian means to the Bezier shell points they were initialized from.
             if (
