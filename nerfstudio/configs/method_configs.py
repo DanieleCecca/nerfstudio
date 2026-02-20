@@ -619,6 +619,10 @@ method_configs["splatfacto"] = TrainerConfig(
                 max_steps=30000,
             ),
         },
+        "patch_textures": {
+            "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
+            "scheduler": None,
+        },
         "features_dc": {
             "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
             "scheduler": None,
@@ -685,6 +689,10 @@ method_configs["splatfacto-big"] = TrainerConfig(
                 lr_final=1.6e-6,
                 max_steps=30000,
             ),
+        },
+        "patch_textures": {
+            "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
+            "scheduler": None,
         },
         "features_dc": {
             "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
@@ -753,6 +761,10 @@ method_configs["splatfacto-mcmc"] = TrainerConfig(
                 lr_final=1.6e-6,
                 max_steps=30000,
             ),
+        },
+        "patch_textures": {
+            "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
+            "scheduler": None,
         },
         "features_dc": {
             "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
