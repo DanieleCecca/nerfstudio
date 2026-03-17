@@ -859,6 +859,8 @@ class SplatfactoModel(Model):
 
                     # Store semantic label per Gaussian for later use (buffer).
                     self.register_buffer("gaussian_semantic_labels", sem0, persistent=True)
+                    # Store the seed points used for Bezier construction for optional Chamfer metrics.
+                    self.register_buffer("bezier_seed_points", seed_xyz_obj.detach().to(dtype=torch.float32), persistent=True)
                     bezier_init_done = True
                 else:
                     CONSOLE.log("[yellow]Bezier init enabled, but no patches were generated; falling back.[/yellow]")
@@ -2258,6 +2260,21 @@ class SplatfactoModel(Model):
         else:
             return image
 
+    def _get_bezier_chamfer_sets(self) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """Build point sets for Chamfer distance between open-mode Bezier control points and seed points.
+
+        Returns:
+            Tuple (points_bezier, points_seed), each flattened to (M, 3), or None if unavailable.
+        """
+        if not hasattr(self, "bezier_open_cp") or not hasattr(self, "bezier_seed_points"):
+            return None
+
+        # bezier_open_cp: (S, G, G, 3) – flatten all patches into a single point set.
+        points_bezier = self.bezier_open_cp.reshape(-1, 3)
+        points_seed = self.bezier_seed_points
+
+        return points_bezier, points_seed
+
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
 
@@ -2275,6 +2292,31 @@ class SplatfactoModel(Model):
             metrics_dict["cc_psnr"] = self.psnr(cc_rgb, gt_rgb)
 
         metrics_dict["gaussian_count"] = self.num_points
+
+        # Optional Chamfer distance metrics between Bezier control points and seed point cloud.
+        try:
+            from pytorch3d.loss import chamfer_distance
+
+            chamfer_sets = self._get_bezier_chamfer_sets()
+            if chamfer_sets is not None:
+                points_bezier, points_seed = chamfer_sets
+                # Ensure batched shape (1, N, 3) for pytorch3d API.
+                pb = points_bezier.unsqueeze(0)
+                ps = points_seed.unsqueeze(0)
+
+                # Bidirectional Chamfer (default: symmetric).
+                cd_full, _ = chamfer_distance(pb, ps, batch_reduction=None, point_reduction="mean")
+                # Unidirectional Chamfer: Bezier → seed (single directional).
+                cd_uni, _ = chamfer_distance(
+                    pb, ps, batch_reduction=None, point_reduction="mean", single_directional=True
+                )
+
+                # Scalars for logging.
+                metrics_dict["bezier_chamfer_bidirectional"] = cd_full.squeeze()
+                metrics_dict["bezier_chamfer_unidirectional"] = cd_uni.squeeze()
+        except Exception:
+            # Chamfer metrics are optional; ignore if pytorch3d is unavailable or inputs are invalid.
+            pass
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
         return metrics_dict
