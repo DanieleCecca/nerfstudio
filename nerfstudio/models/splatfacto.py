@@ -2295,27 +2295,30 @@ class SplatfactoModel(Model):
 
         # Optional Chamfer distance metrics between Bezier control points and seed point cloud.
         try:
-            from pytorch3d.loss import chamfer_distance
+            from chamferdist import ChamferDistance
+
+            chamfer = ChamferDistance()
 
             chamfer_sets = self._get_bezier_chamfer_sets()
             if chamfer_sets is not None:
                 points_bezier, points_seed = chamfer_sets
-                # Ensure batched shape (1, N, 3) for pytorch3d API.
+
+                # Ensure batched shape (1, N, 3)
                 pb = points_bezier.unsqueeze(0)
                 ps = points_seed.unsqueeze(0)
 
-                # Bidirectional Chamfer (default: symmetric).
-                cd_full, _ = chamfer_distance(pb, ps, batch_reduction=None, point_reduction="mean")
-                # Unidirectional Chamfer: Bezier → seed (single directional).
-                cd_uni, _ = chamfer_distance(
-                    pb, ps, batch_reduction=None, point_reduction="mean", single_directional=True
-                )
+                # Bidirectional Chamfer (default behavior)
+                cd_full = chamfer(pb, ps)
 
-                # Scalars for logging.
+                # Unidirectional Chamfer: Bezier → seed
+                cd_uni = chamfer(pb, ps, reverse=False)  # oppure reverse=True per l’altra direzione
+
+                # Scalars for logging
                 metrics_dict["bezier_chamfer_bidirectional"] = cd_full.squeeze()
                 metrics_dict["bezier_chamfer_unidirectional"] = cd_uni.squeeze()
+
         except Exception:
-            # Chamfer metrics are optional; ignore if pytorch3d is unavailable or inputs are invalid.
+            # Chamfer metrics are optional
             pass
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
