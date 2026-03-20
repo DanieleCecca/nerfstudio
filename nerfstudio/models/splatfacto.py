@@ -2308,7 +2308,7 @@ class SplatfactoModel(Model):
                 ps = points_seed.unsqueeze(0)
 
                 # Bidirectional Chamfer (default behavior)
-                cd_full = chamfer(pb, ps)
+                cd_full = chamfer(pb, ps,bidirectional=True)
 
                 # Unidirectional Chamfer: Bezier → seed
                 cd_uni = chamfer(pb, ps, reverse=False)  # oppure reverse=True per l’altra direzione
