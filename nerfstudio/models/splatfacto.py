@@ -45,6 +45,7 @@ from nerfstudio.utils.colors import get_color
 from nerfstudio.utils.math import k_nearest_sklearn, random_quat_tensor
 from nerfstudio.utils.misc import torch_compile
 from nerfstudio.utils.rich_utils import CONSOLE
+from nerfstudio.utils import writer as event_writer
 from nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
 from nerfstudio.model_components.bezier_surface import (
     BezierShellPatch,
@@ -2275,6 +2276,65 @@ class SplatfactoModel(Model):
 
         return points_bezier, points_seed
 
+    def _log_chamfer_pointcloud_to_tensorboard(
+        self,
+        tag_prefix: str,
+        source_points: torch.Tensor,
+        target_points: torch.Tensor,
+        point_distances: torch.Tensor,
+        step: int,
+    ) -> None:
+        """Log per-point Chamfer errors to TensorBoard (histogram + colored point clouds)."""
+        if not event_writer.is_initialized():
+            return
+
+        if source_points is None or target_points is None or point_distances is None:
+            return
+
+        src = source_points.detach().cpu()
+        tgt = target_points.detach().cpu()
+        dists = point_distances.detach().cpu().flatten()
+
+        if dists.numel() == 0 or src.shape[0] == 0 or tgt.shape[0] == 0:
+            return
+
+        # Histogram of per-point distances.
+        event_writer.put_histogram(f"{tag_prefix}/point_distances", dists, step)
+
+        # Extra scalar summaries (so you can compare histogram vs aggregated Chamfer metrics).
+        event_writer.put_scalar(f"{tag_prefix}/point_distance_mean", dists.mean().item(), step)
+        event_writer.put_scalar(f"{tag_prefix}/point_distance_max", dists.max().item(), step)
+        event_writer.put_scalar(f"{tag_prefix}/point_distance_min", dists.min().item(), step)
+
+        # Normalize distances to [0, 1] for coloring (blue=low error, red=high error).
+        dmin = dists.min()
+        dmax = dists.max()
+        norm = (dists - dmin) / (dmax - dmin + 1e-8)
+
+        red = norm
+        green = torch.zeros_like(norm)
+        blue = 1.0 - norm
+        src_colors = torch.stack([red, green, blue], dim=-1)  # (N, 3)
+
+        # Fixed gray color for target cloud.
+        tgt_colors = torch.full_like(tgt, 0.7)  # (M, 3)
+
+        # TensorBoard add_mesh accepts vertices shaped as (V, 3) for point-cloud rendering.
+        event_writer.put_mesh(
+            f"{tag_prefix}/source_colored_by_distance",
+            vertices=src.unsqueeze(0),
+            colors=src_colors.unsqueeze(0),
+            step=step,
+            faces=None,
+        )
+        event_writer.put_mesh(
+            f"{tag_prefix}/target_reference",
+            vertices=tgt.unsqueeze(0),
+            colors=tgt_colors.unsqueeze(0),
+            step=step,
+            faces=None,
+        )
+
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
 
@@ -2307,15 +2367,52 @@ class SplatfactoModel(Model):
                 pb = points_bezier.unsqueeze(0)
                 ps = points_seed.unsqueeze(0)
 
-                # Bidirectional Chamfer (default behavior)
-                cd_full = chamfer(pb, ps,bidirectional=True)
+                # Bidirectional Chamfer (scalar)
+                cd_full = chamfer(
+                    pb,
+                    ps,
+                    bidirectional=True,
+                    point_reduction="sum",
+                    batch_reduction="mean",
+                )
 
-                # Unidirectional Chamfer: Bezier → seed
-                cd_uni = chamfer(pb, ps, reverse=False)  # oppure reverse=True per l’altra direzione
+                # Unidirectional Chamfer (Bezier -> seed): scalar
+                cd_uni = chamfer(
+                    pb,
+                    ps,
+                    reverse=False,
+                    point_reduction="sum",
+                    batch_reduction="mean",
+                )
 
-                # Scalars for logging
+                # Per-point Chamfer distances (Bezier -> seed): (1, N)
+                cd_per_point = chamfer(
+                    pb,
+                    ps,
+                    reverse=False,
+                    point_reduction=None,
+                    batch_reduction=None,
+                )
+                cd_per_point = cd_per_point.squeeze(0)  # (N,)
+
+                # Scalars (aggregated Chamfer) + summary stats.
                 metrics_dict["bezier_chamfer_bidirectional"] = cd_full.squeeze()
                 metrics_dict["bezier_chamfer_unidirectional"] = cd_uni.squeeze()
+                metrics_dict["bezier_chamfer_per_point_mean"] = cd_per_point.mean()
+                metrics_dict["bezier_chamfer_per_point_max"] = cd_per_point.max()
+                metrics_dict["bezier_chamfer_per_point_min"] = cd_per_point.min()
+
+                # Log histogram + point clouds with the same cadence used for other metrics.
+                steps_per_log = event_writer.GLOBAL_BUFFER.get("steps_per_log", 0)
+                step = int(getattr(self, "step", 0))
+                if self.training and steps_per_log and step % steps_per_log == 0:
+                    self._log_chamfer_pointcloud_to_tensorboard(
+                        tag_prefix="Train Metrics Dict/Chamfer/BezierToSeed",
+                        source_points=points_bezier,
+                        target_points=points_seed,
+                        point_distances=cd_per_point,
+                        step=step,
+                    )
 
         except Exception:
             # Chamfer metrics are optional

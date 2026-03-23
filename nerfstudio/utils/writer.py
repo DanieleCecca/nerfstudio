@@ -66,6 +66,8 @@ class EventType(enum.Enum):
     SCALAR = "write_scalar"
     DICT = "write_scalar_dict"
     CONFIG = "write_config"
+    HISTOGRAM = "write_histogram"
+    MESH = "write_mesh"
 
 
 @check_main_thread
@@ -119,6 +121,47 @@ def put_config(name: str, config_dict: Dict[str, Any], step: int):
         step: step associated with dict
     """
     EVENT_STORAGE.append({"name": name, "write_type": EventType.CONFIG, "event": config_dict, "step": step})
+
+
+@check_main_thread
+def put_histogram(name: str, values: Union[torch.Tensor, Any], step: int) -> None:
+    """Place histogram values into the queue to be written out."""
+    if isinstance(name, EventName):
+        name = name.value
+
+    if isinstance(values, torch.Tensor):
+        values = values.detach().cpu()
+
+    EVENT_STORAGE.append({"name": name, "write_type": EventType.HISTOGRAM, "event": values, "step": step})
+
+
+@check_main_thread
+def put_mesh(
+    name: str,
+    vertices: torch.Tensor,
+    colors: Optional[torch.Tensor],
+    step: int,
+    faces: Optional[torch.Tensor] = None,
+) -> None:
+    """Place point-cloud/mesh data into the queue to be written out.
+
+    TensorBoard `add_mesh` supports `faces=None`, which is useful for point clouds.
+    """
+    if isinstance(name, EventName):
+        name = name.value
+
+    vertices = vertices.detach().cpu()
+    colors = None if colors is None else colors.detach().cpu()
+    faces = None if faces is None else faces.detach().cpu()
+
+    EVENT_STORAGE.append(
+        {
+            "name": name,
+            "write_type": EventType.MESH,
+            "event": {"vertices": vertices, "colors": colors, "faces": faces},
+            "step": step,
+        }
+    )
 
 
 @check_main_thread
@@ -326,6 +369,13 @@ class WandbWriter(Writer):
 
         wandb.log({name: scalar}, step=step)
 
+    # Optional event types (not implemented for wandb).
+    def write_histogram(self, name: str, values: Any, step: int) -> None:  # noqa: ARG002
+        return
+
+    def write_mesh(self, name: str, mesh_event: Any, step: int) -> None:  # noqa: ARG002
+        return
+
     def write_config(self, name: str, config_dict: Dict[str, Any], step: int):
         """Function that writes out the config to wandb
 
@@ -350,6 +400,15 @@ class TensorboardWriter(Writer):
 
     def write_scalar(self, name: str, scalar: Union[float, torch.Tensor], step: int) -> None:
         self.tb_writer.add_scalar(name, scalar, step)
+
+    def write_histogram(self, name: str, values: Any, step: int) -> None:
+        self.tb_writer.add_histogram(name, values, step)
+
+    def write_mesh(self, name: str, mesh_event: Dict[str, Any], step: int) -> None:
+        vertices = mesh_event["vertices"]
+        colors = mesh_event.get("colors", None)
+        faces = mesh_event.get("faces", None)
+        self.tb_writer.add_mesh(tag=name, vertices=vertices, colors=colors, faces=faces, global_step=step)
 
     def write_config(self, name: str, config_dict: Dict[str, Any], step: int):
         """Function that writes out the config to tensorboard
@@ -377,6 +436,13 @@ class CometWriter(Writer):
 
     def write_scalar(self, name: str, scalar: Union[float, torch.Tensor], step: int) -> None:
         self.experiment.log_metric(name, scalar, step)
+
+    # Optional event types (not implemented for comet).
+    def write_histogram(self, name: str, values: Any, step: int) -> None:  # noqa: ARG002
+        return
+
+    def write_mesh(self, name: str, mesh_event: Any, step: int) -> None:  # noqa: ARG002
+        return
 
     def write_config(self, name: str, config_dict: Dict[str, Any], step: int):
         """Function that writes out the config to Comet
