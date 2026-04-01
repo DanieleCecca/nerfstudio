@@ -50,10 +50,13 @@ from nerfstudio.utils.spherical_harmonics import RGB2SH, SH2RGB, num_sh_bases
 from nerfstudio.model_components.bezier_surface import (
     BezierShellPatch,
     BezierPatchGeneratorConfig,
+    BezierSurfacePatch,
     PairedBezierSurfacePatch,
     bezier_shell_topo_losses_from_samples,
+    build_cube_bezier_control_points,
     export_bezier_patches_as_ply,
     fit_bezier_control_points_from_grid,
+    generate_bezier_cube_from_labeled_points,
     generate_bezier_patches_from_labeled_points,
     sample_bezier_surfaces,
     sample_paired_bezier_surfaces,
@@ -253,6 +256,15 @@ class SplatfactoModelConfig(ModelConfig):
 
     bezier_seed: int = 0
     """Random seed used for patch center sampling."""
+
+    bezier_cube_init: bool = False
+    """If True, initialize Bezier surfaces as a cube from the AABB of labeled seed points.
+    Each face of the cube is tiled with k x k patches that share boundary control points.
+    Mutually exclusive with the KNN-based patch generation (``center_sampling='fps'/'random'``).
+    """
+
+    bezier_cube_k: int = 1
+    """Number of Bezier patches per dimension per cube face (total patches = 6 * k^2)."""
 
     bezier_num_r: int = 5
     """R: number of interpolated surfaces between S_out and S_in (must be >= 2 when closed mode is enabled)."""
@@ -565,6 +577,9 @@ class SplatfactoModel(Model):
         open_patch_idx_list: List[torch.Tensor] = []
         open_u_idx_list: List[torch.Tensor] = []
         open_v_idx_list: List[torch.Tensor] = []
+        # Cube-mode: shared control-point tensor and index map (set when bezier_cube_init=True).
+        cube_shared_cp_data: Optional[torch.Tensor] = None
+        cube_index_map_data: Optional[torch.Tensor] = None
 
         # Optional: initialize Gaussians from Bezier surface samples (requires semantic labels for seed points).
         meta = self.kwargs.get("metadata", {}) if isinstance(self.kwargs, dict) else {}
@@ -593,15 +608,41 @@ class SplatfactoModel(Model):
                 seed_rgb_obj = seed_rgb[obj_mask] if seed_rgb.numel() > 0 and int(seed_rgb.shape[0]) == int(seed_xyz.shape[0]) else seed_rgb
                 seed_labels_obj = seed_labels[obj_mask]
 
-                patch_cfg = BezierPatchGeneratorConfig(
-                    num_patches_per_class=int(self.config.bezier_num_patches_per_class),
-                    knn_k=int(self.config.bezier_knn_k),
-                    control_grid_size=4,
-                    center_sampling=self.config.bezier_center_sampling,
-                    seed=int(self.config.bezier_seed),
-                    device="cpu",
-                )
-                patches_by_label = generate_bezier_patches_from_labeled_points(seed_xyz_obj, seed_labels_obj, patch_cfg)
+                is_cube_init = bool(self.config.bezier_cube_init)
+
+                if is_cube_init:
+                    if str(getattr(self.config, "bezier_surface_mode", "open")) != "open":
+                        raise ValueError("bezier_cube_init requires bezier_surface_mode='open'.")
+                    cube_by_label = generate_bezier_cube_from_labeled_points(
+                        seed_xyz_obj, seed_labels_obj,
+                        k=int(self.config.bezier_cube_k),
+                        grid_size=4,
+                    )
+                    patches_by_label: Dict[int, List] = {}
+                    all_unique_cps: List[torch.Tensor] = []
+                    all_index_maps: List[torch.Tensor] = []
+                    for lab_i, (unique_cp, index_map) in cube_by_label.items():
+                        cp_offset = sum(int(c.shape[0]) for c in all_unique_cps)
+                        all_unique_cps.append(unique_cp)
+                        all_index_maps.append(index_map + cp_offset)
+                        patches = []
+                        for s in range(int(index_map.shape[0])):
+                            cp = unique_cp[index_map[s]]
+                            patches.append(BezierSurfacePatch(cp))
+                        patches_by_label[lab_i] = patches
+                    if all_unique_cps:
+                        cube_shared_cp_data = torch.cat(all_unique_cps, dim=0)
+                        cube_index_map_data = torch.cat(all_index_maps, dim=0)
+                else:
+                    patch_cfg = BezierPatchGeneratorConfig(
+                        num_patches_per_class=int(self.config.bezier_num_patches_per_class),
+                        knn_k=int(self.config.bezier_knn_k),
+                        control_grid_size=4,
+                        center_sampling=self.config.bezier_center_sampling,
+                        seed=int(self.config.bezier_seed),
+                        device="cpu",
+                    )
+                    patches_by_label = generate_bezier_patches_from_labeled_points(seed_xyz_obj, seed_labels_obj, patch_cfg)
 
                 Nu = int(self.config.bezier_num_u)
                 Nv = int(self.config.bezier_num_v)
@@ -869,11 +910,21 @@ class SplatfactoModel(Model):
                 CONSOLE.log(f"[yellow]Bezier init failed, falling back to standard seed init: {e}[/yellow]")
 
         # ── Open-mode: register trainable Bezier control points and index buffers ──
-        if len(open_cp_list) > 0:
+        if len(open_cp_list) > 0 or cube_shared_cp_data is not None:
             try:
-                self.bezier_open_cp = torch.nn.Parameter(
-                    torch.stack(open_cp_list, dim=0)  # (S, G, G, 3)
-                )
+                if cube_shared_cp_data is not None and cube_index_map_data is not None:
+                    self.bezier_cube_shared_cp = torch.nn.Parameter(cube_shared_cp_data.float())
+                    self.register_buffer(
+                        "bezier_cube_index_map",
+                        cube_index_map_data.to(dtype=torch.long),
+                        persistent=True,
+                    )
+                    S_open = int(cube_index_map_data.shape[0])
+                else:
+                    self.bezier_open_cp = torch.nn.Parameter(
+                        torch.stack(open_cp_list, dim=0)  # (S, G, G, 3)
+                    )
+                    S_open = int(self.bezier_open_cp.shape[0])
                 self.register_buffer(
                     "bezier_open_patch_idx",
                     torch.cat(open_patch_idx_list, dim=0).to(dtype=torch.long),
@@ -889,7 +940,6 @@ class SplatfactoModel(Model):
                     torch.cat(open_v_idx_list, dim=0).to(dtype=torch.long),
                     persistent=True,
                 )
-                S_open = int(self.bezier_open_cp.shape[0])
                 T_tex = int(getattr(self.config, "bezier_texture_size", 8))
                 self.patch_textures = torch.nn.Parameter(
                     torch.rand(S_open, T_tex, T_tex, 4, dtype=torch.float32) * 0.5
@@ -906,8 +956,9 @@ class SplatfactoModel(Model):
                             torch.cat(prune_surface_idx_list, dim=0).to(dtype=torch.long),
                             persistent=True,
                         )
+                mode_label = "cube" if cube_shared_cp_data is not None else "open"
                 CONSOLE.log(
-                    f"[green]Bezier open mode: {S_open} patches, "
+                    f"[green]Bezier {mode_label} mode: {S_open} patches, "
                     f"{int(self.bezier_open_patch_idx.shape[0])} Gaussians[/green]"
                 )
             except Exception as e:
@@ -1222,9 +1273,9 @@ class SplatfactoModel(Model):
 
     def step_post_backward(self, step):
         assert step == self.step
-        # Open-mode Bezier: means/scales come from the patch, skip standard
+        # Open/cube-mode Bezier: means/scales come from the patch, skip standard
         # densification but still allow surface-level pruning.
-        if hasattr(self, "bezier_open_cp"):
+        if hasattr(self, "bezier_open_cp") or hasattr(self, "bezier_cube_shared_cp"):
             if bool(getattr(self.config, "bezier_surface_pruning_enabled", False)):
                 self._maybe_prune_bezier_surfaces()
             return
@@ -1466,8 +1517,9 @@ class SplatfactoModel(Model):
     def _export_bezier_meshes(self, training_callback_attributes: TrainingCallbackAttributes, step: int):
         """Export Bezier surface patches as triangle-mesh PLY files at end of training."""
         has_open = hasattr(self, "bezier_open_cp")
+        has_cube = hasattr(self, "bezier_cube_shared_cp")
         has_shell = hasattr(self, "bezier_shell_cp_out") and hasattr(self, "bezier_shell_cp_in")
-        if not (has_open or has_shell):
+        if not (has_open or has_cube or has_shell):
             CONSOLE.log("[yellow]Bezier mesh export skipped: no Bezier control points found.[/yellow]")
             return
 
@@ -1485,7 +1537,13 @@ class SplatfactoModel(Model):
         Nv = int(self.config.bezier_num_v)
 
         try:
-            if has_open:
+            if has_cube:
+                cp = self.bezier_cube_shared_cp[self.bezier_cube_index_map].detach()
+                paths = export_bezier_patches_as_ply(
+                    cp, out_dir, num_u=Nu, num_v=Nv, prefix="bezier_cube",
+                )
+                CONSOLE.log(f"[green]Exported {len(paths)} cube-mode Bezier mesh file(s) to {out_dir}[/green]")
+            elif has_open:
                 paths = export_bezier_patches_as_ply(
                     self.bezier_open_cp.detach(),
                     out_dir,
@@ -1533,7 +1591,7 @@ class SplatfactoModel(Model):
         opacities_all = self.opacities
         quats_all = self.quats
 
-        if hasattr(self, "bezier_open_cp"):
+        if hasattr(self, "bezier_open_cp") or hasattr(self, "bezier_cube_shared_cp"):
             means_all, scales_log_all, open_keep = self._bezier_open_resample_means_scales()
             if open_keep is not None:
                 opacities_all = opacities_all[open_keep]
@@ -1613,6 +1671,14 @@ class SplatfactoModel(Model):
             name: [self.gauss_params[name]]
             for name in ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]
         }
+
+        # Cube-mode Bezier: shared CP tensor replaces means/scales.
+        if hasattr(self, "bezier_cube_shared_cp"):
+            gps["means"] = [self.bezier_cube_shared_cp]
+            gps.pop("scales", None)
+            if hasattr(self, "patch_textures"):
+                gps["patch_textures"] = [self.patch_textures]
+            return gps
 
         # Open-mode Bezier: control points replace means/scales; per-patch textures drive color/opacity.
         if hasattr(self, "bezier_open_cp"):
@@ -1719,7 +1785,8 @@ class SplatfactoModel(Model):
             return
         if not hasattr(self, "bezier_surface_active"):
             return
-        is_open = hasattr(self, "bezier_open_cp")
+        is_cube = hasattr(self, "bezier_cube_shared_cp")
+        is_open = is_cube or hasattr(self, "bezier_open_cp")
         is_shell = hasattr(self, "bezier_shell_cp_out")
         if not (is_open or is_shell):
             return
@@ -1772,9 +1839,13 @@ class SplatfactoModel(Model):
         Nv = max(2, int(getattr(self.config, "bezier_prune_area_num_v", 20)))
 
         if is_open:
-            dtype_cp = self.bezier_open_cp.dtype
+            if is_cube:
+                cp_open = self.bezier_cube_shared_cp[self.bezier_cube_index_map]
+            else:
+                cp_open = self.bezier_open_cp
+            dtype_cp = cp_open.dtype
             X_surf = sample_bezier_surfaces(
-                self.bezier_open_cp.to(device=device, dtype=dtype_cp),
+                cp_open.to(device=device, dtype=dtype_cp),
                 num_u=Nu, num_v=Nv,
             )  # (S, Nu, Nv, 3)
             thick = None
@@ -1881,11 +1952,12 @@ class SplatfactoModel(Model):
         return means, scales_log
 
     def _bezier_open_resample_means_scales(self) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """Re-sample Gaussian means and log-scales from the open-mode Bezier patches.
+        """Re-sample Gaussian means and log-scales from the open/cube-mode Bezier patches.
 
-        The control points in ``self.bezier_open_cp`` are trainable nn.Parameters,
-        so the returned tensors are part of the autograd graph and the rendering
-        loss will back-propagate to the control points.
+        When cube mode is active (``bezier_cube_shared_cp`` exists), per-patch
+        control points are assembled from the shared tensor via the index map.
+        Otherwise falls back to the independent ``bezier_open_cp`` tensor.
+        In both cases the returned tensors participate in the autograd graph.
 
         Returns:
             means: (N', 3)
@@ -1895,10 +1967,12 @@ class SplatfactoModel(Model):
                        returned; the caller must apply the same mask to the other
                        per-Gaussian arrays (opacities, quats, features, …).
         """
-        if not hasattr(self, "bezier_open_cp"):
-            raise RuntimeError("Open-mode Bezier resample requested but bezier_open_cp is missing.")
-
-        cp = self.bezier_open_cp  # (S, G, G, 3)
+        if hasattr(self, "bezier_cube_shared_cp"):
+            cp = self.bezier_cube_shared_cp[self.bezier_cube_index_map]  # (S, G, G, 3)
+        elif hasattr(self, "bezier_open_cp"):
+            cp = self.bezier_open_cp  # (S, G, G, 3)
+        else:
+            raise RuntimeError("Open-mode Bezier resample requested but neither bezier_cube_shared_cp nor bezier_open_cp is present.")
         Nu = int(self.config.bezier_num_u)
         Nv = int(self.config.bezier_num_v)
         X = sample_bezier_surfaces(cp, num_u=Nu, num_v=Nv)  # (S, Nu, Nv, 3)
@@ -1965,7 +2039,7 @@ class SplatfactoModel(Model):
         # cropping
         if self.crop_box is not None and not self.training:
             means_all = self.means
-            if hasattr(self, "bezier_open_cp"):
+            if hasattr(self, "bezier_open_cp") or hasattr(self, "bezier_cube_shared_cp"):
                 means_all, _, _ = self._bezier_open_resample_means_scales()
             elif bool(getattr(self.config, "bezier_reparam_enabled", False)) and hasattr(self, "bezier_shell_cp_out"):
                 means_all, _ = self._bezier_reparam_means_scales()
@@ -1989,6 +2063,7 @@ class SplatfactoModel(Model):
         if (
             bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
             and (not hasattr(self, "bezier_open_cp"))
+            and (not hasattr(self, "bezier_cube_shared_cp"))
             and (not bool(getattr(self.config, "bezier_reparam_enabled", False)))
             and hasattr(self, "bezier_surface_active")
         ):
@@ -2008,9 +2083,9 @@ class SplatfactoModel(Model):
                 quats_all = quats_all[keep]
                 means_all = means_all[keep]
                 scales_all = scales_all[keep]
-        # Open-mode Bezier reparameterization: resample means/scales from the
+        # Open/cube-mode Bezier reparameterization: resample means/scales from the
         # (updated) control points every forward pass.
-        if hasattr(self, "bezier_open_cp"):
+        if hasattr(self, "bezier_open_cp") or hasattr(self, "bezier_cube_shared_cp"):
             means_all, scales_all, open_keep = self._bezier_open_resample_means_scales()
             if open_keep is not None:
                 opacities_all = opacities_all[open_keep]
@@ -2143,6 +2218,7 @@ class SplatfactoModel(Model):
         if self.training:
             skip_densify = (
                 hasattr(self, "bezier_open_cp")
+                or hasattr(self, "bezier_cube_shared_cp")
                 or bool(getattr(self.config, "bezier_reparam_enabled", False))
                 or bool(getattr(self.config, "bezier_surface_pruning_enabled", False))
             )
@@ -2262,19 +2338,24 @@ class SplatfactoModel(Model):
             return image
 
     def _get_bezier_chamfer_sets(self) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
-        """Build point sets for Chamfer distance between open-mode Bezier control points and seed points.
+        """Build point sets for Chamfer distance between Bezier control points and seed points.
+
+        Supports both cube mode (shared CP tensor) and open mode (per-patch CPs).
 
         Returns:
             Tuple (points_bezier, points_seed), each flattened to (M, 3), or None if unavailable.
         """
-        if not hasattr(self, "bezier_open_cp") or not hasattr(self, "bezier_seed_points"):
+        if not hasattr(self, "bezier_seed_points"):
             return None
 
-        # bezier_open_cp: (S, G, G, 3) – flatten all patches into a single point set.
-        points_bezier = self.bezier_open_cp.reshape(-1, 3)
-        points_seed = self.bezier_seed_points
+        if hasattr(self, "bezier_cube_shared_cp"):
+            points_bezier = self.bezier_cube_shared_cp  # already (N_unique, 3)
+        elif hasattr(self, "bezier_open_cp"):
+            points_bezier = self.bezier_open_cp.reshape(-1, 3)
+        else:
+            return None
 
-        return points_bezier, points_seed
+        return points_bezier, self.bezier_seed_points
 
     def _log_chamfer_pointcloud_to_tensorboard(
         self,
@@ -2584,14 +2665,15 @@ class SplatfactoModel(Model):
                     # Keep training stable if something goes wrong.
                     CONSOLE.log(f"[yellow]Warning: Bezier topo loss failed (skipping): {e}[/yellow]")
 
-            # Optional: L2 regularizer on open Bezier control points (reduces excessive deformations).
-            if (
-                hasattr(self, "bezier_open_cp")
-                and float(getattr(self.config, "bezier_open_cp_l2_lambda", 0.0)) != 0.0
-            ):
+            # Optional: L2 regularizer on open/cube Bezier control points (reduces excessive deformations).
+            if float(getattr(self.config, "bezier_open_cp_l2_lambda", 0.0)) != 0.0:
                 lambda_reg = float(self.config.bezier_open_cp_l2_lambda)
-                loss_reg = lambda_reg * (self.bezier_open_cp**2).mean()
-                loss_dict["bezier_cp_l2_loss"] = loss_reg
+                if hasattr(self, "bezier_cube_shared_cp"):
+                    loss_reg = lambda_reg * (self.bezier_cube_shared_cp**2).mean()
+                    loss_dict["bezier_cp_l2_loss"] = loss_reg
+                elif hasattr(self, "bezier_open_cp"):
+                    loss_reg = lambda_reg * (self.bezier_open_cp**2).mean()
+                    loss_dict["bezier_cp_l2_loss"] = loss_reg
 
             # Optional: attach (a subset of) Gaussian means to the Bezier shell points they were initialized from.
             if (

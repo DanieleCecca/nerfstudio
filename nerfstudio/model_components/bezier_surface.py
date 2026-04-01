@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 
 import torch
 
@@ -525,6 +525,145 @@ def _create_planar_control_points(neighbors: torch.Tensor, grid_size: int = 4) -
         + vv[:, :, None] * v_axis[None, None, :]
     )
     return cp
+
+
+@torch.no_grad()
+def build_cube_bezier_control_points(
+    bbox_min: torch.Tensor,
+    bbox_max: torch.Tensor,
+    k: int = 1,
+    grid_size: int = 4,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Build a shared control-point tensor for a Bezier cube.
+
+    The cube has 6 faces, each tiled with ``k x k`` bicubic Bezier patches.
+    Adjacent patches (within a face and across cube edges/corners) share
+    boundary control points because they map to the **same** indices in the
+    returned flat tensor.
+
+    Args:
+        bbox_min: (3,) minimum corner of the axis-aligned bounding box.
+        bbox_max: (3,) maximum corner of the axis-aligned bounding box.
+        k: number of patches per dimension per face (total patches = 6*k*k).
+        grid_size: control-point grid size per patch axis (4 for cubic Bezier).
+
+    Returns:
+        unique_cp: (N_unique, 3) float tensor of unique control points.
+        index_map: (6*k*k, grid_size, grid_size) long tensor – for patch *s*,
+            ``unique_cp[index_map[s]]`` gives the (grid_size, grid_size, 3)
+            control-point grid.
+    """
+    if bbox_min.shape != (3,) or bbox_max.shape != (3,):
+        raise ValueError("bbox_min and bbox_max must have shape (3,).")
+    if k < 1:
+        raise ValueError("k must be >= 1.")
+
+    degree = grid_size - 1  # 3 for cubic
+    n_cp = degree * k + 1   # control points per dimension per face
+
+    device = bbox_min.device
+    dtype = bbox_min.dtype
+
+    x_lin = torch.linspace(float(bbox_min[0]), float(bbox_max[0]), n_cp, device=device, dtype=dtype)
+    y_lin = torch.linspace(float(bbox_min[1]), float(bbox_max[1]), n_cp, device=device, dtype=dtype)
+    z_lin = torch.linspace(float(bbox_min[2]), float(bbox_max[2]), n_cp, device=device, dtype=dtype)
+
+    face_grids: List[torch.Tensor] = []
+
+    # Face 0: z = min, varies in (x, y)
+    xx, yy = torch.meshgrid(x_lin, y_lin, indexing="ij")
+    zz = torch.full_like(xx, float(bbox_min[2]))
+    face_grids.append(torch.stack([xx, yy, zz], dim=-1))
+
+    # Face 1: z = max, varies in (x, y)
+    zz = torch.full_like(xx, float(bbox_max[2]))
+    face_grids.append(torch.stack([xx, yy, zz], dim=-1))
+
+    # Face 2: y = min, varies in (x, z)
+    xx, zz = torch.meshgrid(x_lin, z_lin, indexing="ij")
+    yy = torch.full_like(xx, float(bbox_min[1]))
+    face_grids.append(torch.stack([xx, yy, zz], dim=-1))
+
+    # Face 3: y = max, varies in (x, z)
+    yy = torch.full_like(xx, float(bbox_max[1]))
+    face_grids.append(torch.stack([xx, yy, zz], dim=-1))
+
+    # Face 4: x = min, varies in (y, z)
+    yy, zz = torch.meshgrid(y_lin, z_lin, indexing="ij")
+    xx = torch.full_like(yy, float(bbox_min[0]))
+    face_grids.append(torch.stack([xx, yy, zz], dim=-1))
+
+    # Face 5: x = max, varies in (y, z)
+    xx = torch.full_like(yy, float(bbox_max[0]))
+    face_grids.append(torch.stack([xx, yy, zz], dim=-1))
+
+    # Concatenate all faces and merge duplicates at edges/corners.
+    all_cp = torch.cat([g.reshape(-1, 3) for g in face_grids], dim=0)  # (6*n_cp^2, 3)
+    rounded = torch.round(all_cp * 1e6) / 1e6
+    unique_cp, inverse = torch.unique(rounded, dim=0, return_inverse=True)
+
+    # Build per-patch index windows from the inverse indices.
+    face_size = n_cp * n_cp
+    index_map_list: List[torch.Tensor] = []
+    for f in range(6):
+        face_inv = inverse[f * face_size : (f + 1) * face_size].reshape(n_cp, n_cp)
+        for pi in range(k):
+            for pj in range(k):
+                u0 = pi * degree
+                v0 = pj * degree
+                patch_idx = face_inv[u0 : u0 + grid_size, v0 : v0 + grid_size]
+                index_map_list.append(patch_idx)
+
+    index_map = torch.stack(index_map_list, dim=0)  # (6*k*k, grid_size, grid_size)
+    return unique_cp, index_map
+
+
+@torch.no_grad()
+def generate_bezier_cube_from_labeled_points(
+    points_xyz: torch.Tensor,
+    semantic_labels: torch.Tensor,
+    k: int = 1,
+    grid_size: int = 4,
+) -> Dict[int, Tuple[torch.Tensor, torch.Tensor]]:
+    """Generate cube-based Bezier control points per semantic label.
+
+    For each non-background label, computes the AABB of the corresponding
+    points and builds a shared-control-point cube via
+    :func:`build_cube_bezier_control_points`.
+
+    Args:
+        points_xyz: (N, 3) float tensor of 3D points.
+        semantic_labels: (N,) int tensor.  0 is treated as background.
+        k: patches per face dimension.
+        grid_size: Bezier grid size (4 for cubic).
+
+    Returns:
+        Dict mapping ``label_id`` to ``(unique_cp, index_map)`` as returned by
+        :func:`build_cube_bezier_control_points`.
+    """
+    if points_xyz.ndim != 2 or points_xyz.shape[-1] != 3:
+        raise ValueError(f"points_xyz must have shape (N,3), got {tuple(points_xyz.shape)}")
+    if semantic_labels.ndim != 1 or semantic_labels.shape[0] != points_xyz.shape[0]:
+        raise ValueError("semantic_labels must have shape (N,) matching points_xyz.")
+
+    out: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+    uniq = torch.unique(semantic_labels)
+    uniq = uniq[uniq > 0]
+    for lab in uniq.tolist():
+        lab_i = int(lab)
+        pts = points_xyz[semantic_labels == lab_i]
+        if int(pts.shape[0]) < 1:
+            continue
+        bbox_min = pts.min(dim=0).values
+        bbox_max = pts.max(dim=0).values
+        # Prevent degenerate (zero-thickness) dimensions.
+        span = bbox_max - bbox_min
+        tiny = float(span.max()) * 1e-3
+        if tiny == 0.0:
+            tiny = 1e-4
+        bbox_max = bbox_max + (span < tiny).float() * tiny
+        out[lab_i] = build_cube_bezier_control_points(bbox_min, bbox_max, k=k, grid_size=grid_size)
+    return out
 
 
 @torch.no_grad()
