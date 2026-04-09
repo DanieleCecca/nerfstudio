@@ -528,6 +528,23 @@ class SplatfactoModelConfig(ModelConfig):
     - "depth": replace the L1 term with L1(DA3_depth(gt_rgb), expected_depth(pred)), keep SSIM on RGB
     """
 
+    # --- FG/BG decomposed loss (active when mask is present) ---
+    mask_loss_norm: Literal["L1", "L2"] = "L1"
+    """Pixel error norm used for the FG/BG decomposed loss ('L1' or 'L2')."""
+
+    mask_lambda_fg: float = 1.0
+    """Weight for the foreground (inside mask) loss term."""
+
+    mask_lambda_bg: float = 0.2
+    """Weight for the background (outside mask) loss term."""
+
+    mask_bg_target: Literal["black", "gt"] = "black"
+    """Background target when mask is present.
+
+    - "black": penalize any predicted color outside the mask (push to zero).
+    - "gt":    compare predicted color to ground-truth even outside the mask.
+    """
+
 
 class SplatfactoModel(Model):
     """Nerfstudio's implementation of Gaussian Splatting
@@ -2499,6 +2516,20 @@ class SplatfactoModel(Model):
             # Chamfer metrics are optional
             pass
 
+        # Bezier CP gradient norms for TensorBoard monitoring.
+        if self.training:
+            for name, param in [
+                ("bezier_cube_shared_cp", getattr(self, "bezier_cube_shared_cp", None)),
+                ("bezier_open_cp", getattr(self, "bezier_open_cp", None)),
+                ("bezier_shell_cp_out", getattr(self, "bezier_shell_cp_out", None)),
+                ("bezier_shell_cp_in", getattr(self, "bezier_shell_cp_in", None)),
+            ]:
+                if param is not None and param.grad is not None:
+                    grad = param.grad.detach()
+                    metrics_dict[f"{name}/grad_norm"] = grad.norm()
+                    metrics_dict[f"{name}/grad_max"] = grad.abs().max()
+                    metrics_dict[f"{name}/grad_mean"] = grad.abs().mean()
+
         self.camera_optimizer.get_metrics_dict(metrics_dict)
         return metrics_dict
 
@@ -2581,8 +2612,32 @@ class SplatfactoModel(Model):
                 Ll1 = torch.abs(gt_depth - pred_depth).mean()
         else:
             if mask is not None:
-                # Use masked mean per-channel over active pixels only.
-                Ll1 = _masked_mean(torch.abs(gt_img_unmasked - pred_img_unmasked), mask)
+                eps = 1e-6
+                M = mask  # [H,W,1]
+                B = 1.0 - M
+                M3 = M.expand_as(pred_img_unmasked)
+                B3 = B.expand_as(pred_img_unmasked)
+
+                if self.config.mask_loss_norm == "L2":
+                    err_fg = (pred_img_unmasked - gt_img_unmasked) ** 2
+                else:
+                    err_fg = torch.abs(pred_img_unmasked - gt_img_unmasked)
+
+                L_fg = (err_fg * M3).sum() / (M3.sum() + eps)
+
+                if self.config.mask_bg_target == "black":
+                    bg_diff = pred_img_unmasked
+                else:
+                    bg_diff = pred_img_unmasked - gt_img_unmasked
+
+                if self.config.mask_loss_norm == "L2":
+                    err_bg = bg_diff ** 2
+                else:
+                    err_bg = torch.abs(bg_diff)
+
+                L_bg = (err_bg * B3).sum() / (B3.sum() + eps)
+
+                Ll1 = self.config.mask_lambda_fg * L_fg + self.config.mask_lambda_bg * L_bg
             else:
                 Ll1 = torch.abs(gt_img - pred_img).mean()
             simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
