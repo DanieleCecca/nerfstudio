@@ -538,12 +538,18 @@ class SplatfactoModelConfig(ModelConfig):
     mask_lambda_bg: float = 0.2
     """Weight for the background (outside mask) loss term."""
 
-    mask_bg_target: Literal["black", "gt"] = "black"
+    mask_bg_target: Literal["black", "gt", "emptiness"] = "black"
     """Background target when mask is present.
 
     - "black": penalize any predicted color outside the mask (push to zero).
     - "gt":    compare predicted color to ground-truth even outside the mask.
+    - "emptiness": penalize accumulation (alpha) outside the mask instead of RGB;
+                   also adds a foreground silhouette term to prevent collapse.
     """
+
+    mask_lambda_sil: float = 0.1
+    """Weight for the foreground silhouette term (only used when mask_bg_target='emptiness').
+    Encourages accumulation to be high inside the mask so the object does not vanish."""
 
 
 class SplatfactoModel(Model):
@@ -1219,6 +1225,19 @@ class SplatfactoModel(Model):
         else:
             raise ValueError(f"""Splatfacto does not support strategy {self.config.strategy}
                              Currently, the supported strategies include default and mcmc.""")
+
+        # Register backward hooks on Bezier CP parameters to cache gradients for TensorBoard logging.
+        self._cp_grad_cache: Dict[str, torch.Tensor] = {}
+        self._cp_grad_hooks: List = []
+        for attr_name in ("bezier_cube_shared_cp", "bezier_open_cp", "bezier_shell_cp_out", "bezier_shell_cp_in"):
+            param = getattr(self, attr_name, None)
+            if param is not None and isinstance(param, torch.nn.Parameter):
+                def _make_hook(name: str):
+                    def _hook(grad: torch.Tensor) -> None:
+                        self._cp_grad_cache[name] = grad.detach()
+                    return _hook
+                handle = param.register_hook(_make_hook(attr_name))
+                self._cp_grad_hooks.append(handle)
 
     @property
     def colors(self):
@@ -2516,19 +2535,12 @@ class SplatfactoModel(Model):
             # Chamfer metrics are optional
             pass
 
-        # Bezier CP gradient norms for TensorBoard monitoring.
-        if self.training:
-            for name, param in [
-                ("bezier_cube_shared_cp", getattr(self, "bezier_cube_shared_cp", None)),
-                ("bezier_open_cp", getattr(self, "bezier_open_cp", None)),
-                ("bezier_shell_cp_out", getattr(self, "bezier_shell_cp_out", None)),
-                ("bezier_shell_cp_in", getattr(self, "bezier_shell_cp_in", None)),
-            ]:
-                if param is not None and param.grad is not None:
-                    grad = param.grad.detach()
-                    metrics_dict[f"{name}/grad_norm"] = grad.norm()
-                    metrics_dict[f"{name}/grad_max"] = grad.abs().max()
-                    metrics_dict[f"{name}/grad_mean"] = grad.abs().mean()
+        # Bezier CP gradient norms for TensorBoard (read from hook buffer filled during backward).
+        if self.training and hasattr(self, "_cp_grad_cache"):
+            for name, grad in self._cp_grad_cache.items():
+                metrics_dict[f"{name}/grad_norm"] = grad.norm()
+                metrics_dict[f"{name}/grad_max"] = grad.abs().max()
+                metrics_dict[f"{name}/grad_mean"] = grad.abs().mean()
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
         return metrics_dict
@@ -2625,19 +2637,30 @@ class SplatfactoModel(Model):
 
                 L_fg = (err_fg * M3).sum() / (M3.sum() + eps)
 
-                if self.config.mask_bg_target == "black":
-                    bg_diff = pred_img_unmasked
+                if self.config.mask_bg_target == "emptiness":
+                    accum = outputs["accumulation"]  # [H, W, 1]
+                    if accum.ndim == 2:
+                        accum = accum[:, :, None]
+                    L_bg_empty = (B * accum ** 2).sum() / (B.sum() + eps)
+                    L_fg_sil = (M * (1.0 - accum) ** 2).sum() / (M.sum() + eps)
+                    Ll1 = (
+                        self.config.mask_lambda_fg * L_fg
+                        + self.config.mask_lambda_bg * L_bg_empty
+                        + self.config.mask_lambda_sil * L_fg_sil
+                    )
                 else:
-                    bg_diff = pred_img_unmasked - gt_img_unmasked
+                    if self.config.mask_bg_target == "black":
+                        bg_diff = pred_img_unmasked
+                    else:
+                        bg_diff = pred_img_unmasked - gt_img_unmasked
 
-                if self.config.mask_loss_norm == "L2":
-                    err_bg = bg_diff ** 2
-                else:
-                    err_bg = torch.abs(bg_diff)
+                    if self.config.mask_loss_norm == "L2":
+                        err_bg = bg_diff ** 2
+                    else:
+                        err_bg = torch.abs(bg_diff)
 
-                L_bg = (err_bg * B3).sum() / (B3.sum() + eps)
-
-                Ll1 = self.config.mask_lambda_fg * L_fg + self.config.mask_lambda_bg * L_bg
+                    L_bg = (err_bg * B3).sum() / (B3.sum() + eps)
+                    Ll1 = self.config.mask_lambda_fg * L_fg + self.config.mask_lambda_bg * L_bg
             else:
                 Ll1 = torch.abs(gt_img - pred_img).mean()
             simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
