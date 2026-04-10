@@ -80,6 +80,84 @@ def resize_image(image: torch.Tensor, d: int):
     return tf.conv2d(image.permute(2, 0, 1)[:, None, ...], weight, stride=d).squeeze(1).permute(1, 2, 0)
 
 
+def filter_seed_points_outlier_knn_mean(
+    xyz: torch.Tensor,
+    labels: torch.Tensor,
+    rgb: torch.Tensor,
+    k: int,
+    lambda_mult: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Remove sparse seed points before Bezier init (per semantic class).
+
+    For each label, compute d_i = mean distance to k nearest neighbors among points of that label.
+    Drop points with d_i > lambda_mult * mean(d) over that class. If lambda_mult <= 0, no filtering.
+
+    Args:
+        xyz: (N, 3) float, object seed positions.
+        labels: (N,) int64, same length as xyz.
+        rgb: (N, C) same length as xyz, or any tensor with wrong length to skip RGB filtering.
+        k: number of neighbors (excluding self).
+        lambda_mult: threshold multiplier; typical values > 1 (e.g. 2.0--3.0).
+
+    Returns:
+        Filtered (xyz, labels, rgb); rgb unchanged if not row-aligned with xyz.
+    """
+    if lambda_mult <= 0.0:
+        return xyz, labels, rgb
+    if k < 1:
+        raise ValueError("bezier_seed_outlier_knn_k must be >= 1.")
+    n = int(xyz.shape[0])
+    if n == 0:
+        return xyz, labels, rgb
+
+    uniq = torch.unique(labels)
+    xyz_parts: List[torch.Tensor] = []
+    lab_parts: List[torch.Tensor] = []
+    rgb_parts: List[torch.Tensor] = []
+    rgb_ok = rgb.numel() > 0 and int(rgb.shape[0]) == n
+
+    for lab in uniq.tolist():
+        lab_i = int(lab)
+        m = labels == lab_i
+        pts = xyz[m].float()
+        ni = int(pts.shape[0])
+        if ni <= k:
+            xyz_parts.append(xyz[m])
+            lab_parts.append(labels[m])
+            if rgb_ok:
+                rgb_parts.append(rgb[m])
+            continue
+        dists, _ = k_nearest_sklearn(pts, k)  # (ni, k)
+        dk = dists.mean(dim=-1)  # (ni,)
+        mean_dk = dk.mean().clamp_min(1e-8)
+        thresh = float(lambda_mult) * mean_dk
+        keep = dk <= thresh
+        if not bool(keep.any()):
+            CONSOLE.log(
+                f"[yellow]bezier_seed_outlier_knn: label {lab_i}: all {ni} points above threshold; keeping all.[/yellow]"
+            )
+            keep = torch.ones((ni,), dtype=torch.bool, device=keep.device)
+        idx = torch.where(m)[0][keep]
+        xyz_parts.append(xyz[idx])
+        lab_parts.append(labels[idx])
+        if rgb_ok:
+            rgb_parts.append(rgb[idx])
+
+    if not xyz_parts:
+        return xyz[:0], labels[:0], rgb[:0] if rgb_ok else rgb
+
+    xyz_out = torch.cat(xyz_parts, dim=0)
+    labels_out = torch.cat(lab_parts, dim=0)
+    rgb_out = torch.cat(rgb_parts, dim=0) if rgb_ok else rgb
+    n_out = int(xyz_out.shape[0])
+    if n_out < n:
+        CONSOLE.log(
+            f"[green]bezier_seed_outlier_knn: removed {n - n_out} / {n} seed points "
+            f"(k={k}, lambda={lambda_mult}).[/green]"
+        )
+    return xyz_out, labels_out, rgb_out
+
+
 @torch_compile()
 def get_viewmat(optimized_camera_to_world):
     """
@@ -256,6 +334,13 @@ class SplatfactoModelConfig(ModelConfig):
 
     bezier_seed: int = 0
     """Random seed used for patch center sampling."""
+
+    bezier_seed_outlier_knn_k: int = 8
+    """k for mean k-NN distance per seed point (used only if bezier_seed_outlier_knn_lambda > 0)."""
+
+    bezier_seed_outlier_knn_lambda: float = 0.0
+    """If > 0, before Bezier init: per class, drop seeds with mean k-NN distance > lambda * mean(mean k-NN).
+    Set to 0 to disable. Typical values: 2.0--3.0."""
 
     bezier_cube_init: bool = False
     """If True, initialize Bezier surfaces as a cube from the AABB of labeled seed points.
@@ -630,6 +715,19 @@ class SplatfactoModel(Model):
                 seed_xyz_obj = seed_xyz[obj_mask]
                 seed_rgb_obj = seed_rgb[obj_mask] if seed_rgb.numel() > 0 and int(seed_rgb.shape[0]) == int(seed_xyz.shape[0]) else seed_rgb
                 seed_labels_obj = seed_labels[obj_mask]
+
+                if float(getattr(self.config, "bezier_seed_outlier_knn_lambda", 0.0)) > 0.0:
+                    seed_xyz_obj, seed_labels_obj, seed_rgb_obj = filter_seed_points_outlier_knn_mean(
+                        seed_xyz_obj,
+                        seed_labels_obj,
+                        seed_rgb_obj,
+                        k=int(self.config.bezier_seed_outlier_knn_k),
+                        lambda_mult=float(self.config.bezier_seed_outlier_knn_lambda),
+                    )
+                    if int(seed_xyz_obj.shape[0]) == 0:
+                        raise ValueError(
+                            "bezier_seed_outlier_knn removed all seed points; lower lambda or disable filtering."
+                        )
 
                 is_cube_init = bool(self.config.bezier_cube_init)
 
