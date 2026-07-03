@@ -1,0 +1,134 @@
+\documentclass{styles/tthesis}
+
+% AI4ST front page (https://github.com/toolleeo/thesis-templatex)
+\renewcommand{\frontpagefile}{frontpages/frontpage-ai4st.inc.tex}
+
+\title{Accurate 3D geometry reconstruction in Gaussian splatting models}
+\author{Daniele Cecca}
+\renewcommand{\regnumber}{914358}
+\graduation{Master's Degree Programme in Artificial Intelligence for Science and Technology}
+\academicyear{2025/2026}
+\supervisor{%
+Prof.\ Domenico Giorgio Sorrenti \\
+Co-supervisors: \\
+Dr.\ Daniele Baieri \\
+Dr.\ Simone Melzi
+}
+
+% Extra packages required by the thesis content (same as tesi/main.tex).
+\usepackage{amsmath,amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[numbers]{natbib}
+\usepackage[hidelinks]{hyperref}
+\makeatletter
+\@ifundefined{Hy@raised@sec@numbering}{}{%
+  \let\Hy@raised@sec@numbering\@gobble}%
+\makeatother
+\usepackage{microtype}
+\usepackage{etoolbox}
+\usepackage{seqsplit}
+\usepackage{tabularx}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta}
+\usepackage{cleveref}
+
+% Prevent running headers from overflowing the page margins.
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\small\thepage}
+\fancyhead[LO]{\small\sloppy\nouppercase\rightmark}
+\fancyhead[RE]{\small\sloppy\nouppercase\leftmark}
+\renewcommand{\headrulewidth}{0.4pt}
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \fancyfoot[C]{\small\thepage}%
+  \renewcommand{\headrulewidth}{0pt}%
+}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  xleftmargin=1em,
+  language=Python,
+  showstringspaces=false,
+  keywordstyle=\bfseries,
+}
+\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{3}
+\AtBeginDocument{%
+  \setcounter{tocdepth}{2}%
+  \setcounter{secnumdepth}{3}%
+}
+
+% Keep paragraph/subsubsection headings in the text but out of the TOC.
+\makeatletter
+\let\thesis@addcontentsline\addcontentsline
+\renewcommand{\addcontentsline}[3]{%
+  \begingroup
+  \def\thesis@aca{#1}%
+  \def\thesis@acb{#2}%
+  \ifdefstring{\thesis@aca}{toc}{%
+    \ifboolexpr{
+      test {\ifdefstring{\thesis@acb}{paragraph}} or
+      test {\ifdefstring{\thesis@acb}{subsubsection}}
+    }{}{\thesis@addcontentsline{#1}{#2}{#3}}%
+  }{\thesis@addcontentsline{#1}{#2}{#3}}%
+  \endgroup
+}
+\let\thesis@oldtexttt\texttt
+\renewcommand{\texttt}[1]{%
+  \begingroup\ttfamily\thesis@oldtexttt{\seqsplit{#1}}\endgroup}
+\makeatother
+
+\newcommand{\filepath}[1]{\nolinkurl{#1}}
+\newcommand{\codeid}[1]{\nolinkurl{#1}}
+\newcommand{\code}[1]{\nolinkurl{#1}}
+\floatplacement{figure}{H}
+\floatplacement{table}{H}
+
+% Figure sizing helpers (Results chapter).
+\newcommand{\resplot}[1]{\includegraphics[width=0.92\textwidth]{#1}}
+\newcommand{\resrender}[1]{\includegraphics[width=0.92\textwidth]{#1}}
+\newcommand{\resmesh}[1]{\includegraphics[width=0.92\textwidth]{#1}}
+\newcommand{\resabl}[1]{\includegraphics[width=0.92\textwidth]{#1}}
+\newcommand{\resbase}[1]{\includegraphics[width=0.92\textwidth]{#1}}
+\newcommand{\ressingle}[1]{\includegraphics[width=0.92\textwidth]{#1}}
+\newcommand{\resgrad}[1]{\includegraphics[width=\linewidth]{#1}}
+
+\begin{document}
+
+\printfrontpage
+
+\begingroup
+\emergencystretch=2em
+\sloppy
+\tableofcontents
+\endgroup
+\begingroup
+\emergencystretch=2em
+\sloppy
+\listoffigures
+\listoftables
+\endgroup
+
+\mainmatter
+\emergencystretch=2em
+\sloppy
+
+\input{chapter_intro.inc.tex}
+\input{chapter_sota.inc.tex}
+\input{chapter_tools.inc.tex}
+\input{chapter_implementation.inc.tex}
+\input{chapter_results.inc.tex}
+\input{chapter_conclusions.inc.tex}
+
+\label{Bibliography}
+\bibliographystyle{plainnat}
+\bibliography{biblio}
+
+\end{document}

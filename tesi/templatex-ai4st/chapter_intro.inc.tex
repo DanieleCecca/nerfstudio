@@ -1,0 +1,44 @@
+﻿\chapter{Introduction}
+
+\section{Motivation}
+Reconstructing accurate three-dimensional representations of the real world from visual observations is a fundamental problem in computer vision. In recent years, major progress has been achieved in generating realistic renderings of scenes from camera images, especially thanks to neural rendering approaches exemplified by methods such as NeRF \cite{mildenhall2020nerf} and 3D Gaussian Splatting \cite{kerbl2023gaussian}.
+
+However, many modern methods are optimized mainly for visual realism rather than geometric accuracy. As a consequence, they can produce highly convincing novel views while still relying on a scene representation whose geometry is approximate, implicit, or not directly usable for measurement.
+
+This limitation is critical whenever the objective is not only rendering, but also reliable structure recovery. Accurate geometry is essential in robotics, augmented reality, digital twins, simulation, and autonomous navigation, where downstream tasks depend on metrically meaningful 3D information.
+
+The central motivation of this thesis is therefore to investigate methods that move from appearance-focused scene modeling toward geometrically meaningful reconstruction starting from monocular image collections.
+
+\section{From Novel View Synthesis to Geometry Reconstruction}
+Before introducing the proposed methods, it is useful to distinguish two related but conceptually different tasks: Novel View Synthesis (NVS) and geometry reconstruction.
+
+In NVS, the objective is to generate images of a scene from viewpoints not present in the training set. Given calibrated images captured from different camera positions, the model learns a representation that supports rendering from new perspectives, as popularized in particular by neural radiance fields \cite{mildenhall2020nerf}.
+
+In geometry reconstruction, the objective is instead to recover physically meaningful and stable scene structure. In this case, rendered visual quality is important but not sufficient.
+
+Many recent NVS methods rely on radiance-field formulations. A generic radiance field is
+\[
+F(\mathbf{x}, \mathbf{d}) \rightarrow (\mathbf{c}, \sigma),
+\]
+where $\mathbf{x}\in\mathbb{R}^3$ is position, $\mathbf{d}$ is viewing direction, $\mathbf{c}$ is color, and $\sigma$ is density.
+
+Two major families are typically considered:
+\begin{itemize}
+    \item \textbf{Implicit neural representations}, such as NeRF \cite{mildenhall2020nerf}, where the radiance field is encoded in network parameters.
+    \item \textbf{Explicit parametric representations}, such as 3D Gaussian Splatting \cite{kerbl2023gaussian}, where the scene is represented through optimized primitives.
+\end{itemize}
+
+Both families can provide high-quality renderings, but neither guarantees accurate surface recovery by default. This thesis focuses exactly on this gap: obtaining better geometry from frameworks originally designed for novel-view photorealism.
+
+\section{Objectives and Contributions}
+Starting from a 3D Gaussian Splatting baseline, this work investigates two complementary strategies to improve geometric reliability.
+\begin{itemize}
+    \item \textbf{Depth-supervised optimization.} A depth term is integrated into the training objective using monocular / any-view depth priors from the Depth Anything line of models \cite{yang2024depth,yang2024depthanythingv2,lin2025depthanything3}. The idea is to encourage better alignment between rendered structure and geometric priors.
+    \item \textbf{Structural representation modification.} B\'ezier surfaces are introduced as explicit geometric elements coupled to Gaussian rendering, in the spirit of splatting-based parametric geometry \cite{liu2025bezier,kerbl2023gaussian}. Object-centric initialization is supported by Grounding DINO \cite{liu2023groundingdino} and SAM~2 \cite{ravi2024sam2}.
+\end{itemize}
+
+In addition, different B\'ezier initialization strategies are explored (random, furthest-point based, and cube-based initialization from object bounds), together with outlier-aware preprocessing to stabilize control-point estimation.
+
+\section{Organization of the Thesis}
+Chapter 2 reviews multi-view geometry, neural scene representations, and related tools used in this work. Chapter 3 introduces the software and reconstruction framework. Chapter 4 presents the methodology, including depth supervision and B\'ezier-based structural changes. Chapter 5 reports qualitative and quantitative results. Chapter 6 discusses limitations and future directions.
+

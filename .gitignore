@@ -175,6 +175,7 @@ events.out.*
 old/
 temp*
 !temporal*
+!tesi/templatex-ai4st
 .nfs*
 external/
 __MACOSX/

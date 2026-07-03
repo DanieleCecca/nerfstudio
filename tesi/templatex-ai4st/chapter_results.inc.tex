@@ -1,0 +1,381 @@
+﻿\chapter{Results}
+\label{chap:results}
+
+\section{Experimental Setup}
+\label{sec:results_setup}
+
+\subsection{Evaluation Metrics}
+\label{subsec:eval_metrics}
+
+Training and exported meshes were monitored in \textbf{TensorBoard}. For geometry, each run logs \textbf{unidirectional} and \textbf{bidirectional Chamfer distance} between a reference point cloud (COLMAP object seeds or a held-out dense sample) and the B\'ezier mesh sampled at export resolution. Unidirectional Chamfer measures the mean nearest-neighbor distance from prediction to reference; bidirectional Chamfer averages both directions and penalizes missing geometry as well as excess surface. Lower values indicate closer alignment with the reference. Control-point stability is analyzed through the logged gradient norm on B\'ezier parameters (\texttt{bezier\_open\_cp} or \texttt{bezier\_cube\_shared\_cp}), reported as smoothed TensorBoard curves over 30k iterations.
+
+\subsection{Test Scenes}
+\label{subsec:test_scenes}
+
+Results focus on two object-centric captures used throughout the B\'ezier experiments: a \textbf{pizza} (compact, roughly convex) and a \textbf{parking meter} (elongated structure, more challenging occlusion and background clutter). Both scenes use Grounded SAM~2 masks for initialization. Reported configurations differ by loss: \texttt{Open/Cube L1} use full-frame photometric $L_1$; names with \texttt{FgBg} additionally apply the decomposed mask objective of Section~\ref{subsec:mask_losses} during training.
+
+\subsection{B\'ezier Hyperparameters in the Study}
+\label{subsec:bezier_study_hparams}
+
+Unless an ablation name states otherwise, reported B\'ezier trainings set \texttt{bezier\_texture\_size}$=N_u=N_v$ (commonly $30$), so each of the $N_u N_v$ Gaussians on a patch reads a distinct texture tile (Section~\ref{subsec:bezier_textures}). This differs from the repository defaults ($T{=}8$, $N_u{=}N_v{=}20$), where tiles are shared across groups of splats. Open-mode ablations additionally use \texttt{bezier\_num\_patches\_per\_class} on the order of $30$ with \texttt{bezier\_center\_sampling} \texttt{fps} or \texttt{random}; cube-mode runs use the AABB lattice ($6k^2$ face patches) with the same $N_u,N_v,T$ coupling for per-Gaussian textures. Values such as \texttt{bezier\_rho} (e.g.\ $20$--$100$) and mask-loss weights are varied between runs and are identified by the configuration labels in Section~\ref{sec:results_ablation}.
+
+\section{Best Result: B\'ezier Structural Model, Cube Mode, Outlier Management}
+\label{sec:results_best_cube_outliers}
+
+The reference configuration is \textbf{Cube L1 FgBg Out}: cube-mode patches on the object AABB, full-frame $L_1$ photometric loss decomposed into foreground and background terms, and $k$-NN outlier rejection before patch fitting (Section~\ref{subsec:knn_outlier}). Among all ablations, it offers the best trade-off between mesh fidelity, training stability, and visual cleanliness on both test scenes.
+
+\subsection{Qualitative Analysis}
+\label{subsec:results_best_qual}
+
+Figure~\ref{fig:best_pizza_qual} summarizes the pizza scene: multi-view RGB renders, predicted depth maps, and the exported cube-mode mesh. The surface stays inside the segmented region, with coherent patch layout and no large detached sheets; the background remains dark in RGB, consistent with FgBg supervision. Figure~\ref{fig:best_parking_qual} reports the same configuration on the parking meter, where the elongated body and coin head are captured without the severe floaters seen in unconstrained baselines (Section~\ref{sec:results_baseline_compare}).
+
+\begin{figure}[H]
+    \centering
+    \resabl{images/conclusion/pizza_ablationstudy_cubeL1FgBg_outliers.png}
+    \caption{Pizza scene, Cube L1 FgBg Out.: multi-view RGB renders (left), predicted depth maps (center), and exported mesh (right).}
+    \label{fig:best_pizza_qual}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \resabl{images/conclusion/parkingmetere_ablationstudy_cubel1fgbg_outliers.png}
+    \caption{Parking meter, Cube L1 FgBg Out.: multi-view RGB renders (left), predicted depth maps (center), and exported mesh (right).}
+    \label{fig:best_parking_qual}
+\end{figure}
+
+\subsection{Quantitative Evaluation}
+\label{subsec:results_best_quant}
+
+On the pizza scene, unidirectional Chamfer for cube-mode runs without outlier management remains an order of magnitude higher than with outliers (Figure~\ref{fig:pizza_cube_chamfer_uni}): \texttt{CubeL1FgBgOut} plateaus near $0.18$ while \texttt{CubeL1} and \texttt{CubeL1FgBg} stay above $21$. Bidirectional Chamfer on the same scene (Figure~\ref{fig:pizza_cube_chamfer_bid}) shows the same separation. Figure~\ref{fig:pizza_best_chamfer_bid} compares the strongest outlier-aware variants across open and cube modes; \texttt{CubeL1FgBgOut} reaches a low stable bidirectional error, confirming the best-result choice. The parking-meter scene exhibits the same trend (Figures~\ref{fig:parking_cube_chamfer_uni}--\ref{fig:parking_best_chamfer_bid}), with outlier-managed runs converging to substantially smaller Chamfer values.
+
+\begin{figure}[H]
+    \centering
+    \resplot{images/conclusion/pizza_cube_chamfer_unid.png}
+    \caption{Pizza: unidirectional Chamfer distance (cube-mode ablations).}
+    \label{fig:pizza_cube_chamfer_uni}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \resplot{images/conclusion/pizza_cube_chamfer_bid.png}
+    \caption{Pizza: bidirectional Chamfer distance (cube-mode ablations).}
+    \label{fig:pizza_cube_chamfer_bid}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \resplot{images/conclusion/pizza_best_chamfer_bid.png}
+    \caption{Pizza: bidirectional Chamfer for the best outlier-managed open/cube variants.}
+    \label{fig:pizza_best_chamfer_bid}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \resplot{images/conclusion/parkingmeter_cube_chamfer_uni.png}
+    \caption{Parking meter: unidirectional Chamfer distance (cube-mode ablations).}
+    \label{fig:parking_cube_chamfer_uni}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \resplot{images/conclusion/parkingmeter_cube_chamfer_bid.png}
+    \caption{Parking meter: bidirectional Chamfer distance (cube-mode ablations).}
+    \label{fig:parking_cube_chamfer_bid}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \resplot{images/conclusion/parking_best_chamfer_bid.png}
+    \caption{Parking meter: bidirectional Chamfer for selected outlier-managed runs.}
+    \label{fig:parking_best_chamfer_bid}
+\end{figure}
+
+\subsection{Gradient Analysis and Stability}
+\label{subsec:results_best_grad}
+
+Figure~\ref{fig:pizza_cube_gradients} plots the gradient norm on shared cube control points. Configurations \textbf{without} outlier filtering (\texttt{CubeL1}, \texttt{CubeL1FgBg}) exhibit frequent large spikes throughout training; the smoothed mean gradient remains elevated ($\sim 0.24$ at 30k steps). When outliers are removed (\texttt{CubeL1Out}, \texttt{CubeL1FgBgOut}), the curves flatten: spikes are rare, and the smoothed gradient drops to $\sim 0.16$--$0.19$. The same pattern appears in open mode (Figure~\ref{fig:pizza_open_gradients}) and on the parking meter (Figures~\ref{fig:parking_cube_gradients},~\ref{fig:parking_open_gradients}).
+
+This behavior indicates that residual outlier seeds leave control points in suboptimal locations: the optimizer receives inconsistent photometric signals and over-corrects, which shows up as noisy CP gradients. After $k$-NN filtering, updates become steadier and the exported mesh aligns more closely with the object, which is consistent with the Chamfer curves in Section~\ref{subsec:results_best_quant}. In short, outlier management improves both \emph{optimization stability} (gradients) and \emph{geometric accuracy} (Chamfer distance).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \resgrad{images/conclusion/pizza_cube_metrics_gradients.png}
+        \caption{Cube CP gradients}
+        \label{fig:pizza_cube_gradients}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \resgrad{images/conclusion/pizza_open_metrics_gradients.png}
+        \caption{Open CP gradients}
+        \label{fig:pizza_open_gradients}
+    \end{subfigure}
+    \caption{Pizza: control-point gradient norms during training.}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \resgrad{images/conclusion/parkingmeter_cube_metrics_gradients.png}
+        \caption{Cube CP gradients}
+        \label{fig:parking_cube_gradients}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \resgrad{images/conclusion/parkinmeter_open_metrics_gradients.png}
+        \caption{Open CP gradients}
+        \label{fig:parking_open_gradients}
+    \end{subfigure}
+    \caption{Parking meter: control-point gradient norms during training.}
+\end{figure}
+
+\section{Ablation Study}
+\label{sec:results_ablation}
+
+The following subsections list every B\'ezier configuration evaluated besides the best result. Each subsection names the scene(s) for which a qualitative panel is shown; metric curves for the full matrix appear in Section~\ref{sec:results_best_cube_outliers} and Section~\ref{sec:results_comparative}. Naming convention: \texttt{Open}/\texttt{Cube} = initialization mode; \texttt{L1}/\texttt{L2} = $L_1$ vs.\ $L_2$ mask norm; \texttt{FgBg} = decomposed mask loss; \texttt{Out} = $k$-NN outlier filtering; \texttt{Fps} = farthest-point patch centers.
+
+\subsection{Open mode, full-frame $L_1$}
+\label{subsec:ablation_open_l1}
+
+Without mask decomposition or outlier filtering, open-mode patches often extend beyond the object on both scenes (Figure~\ref{fig:ablation_open_l1}).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_openL1.png}
+        \caption{Pizza}
+        \label{fig:ablation_open_l1_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_openL1.png}
+        \caption{Parking meter}
+        \label{fig:ablation_open_l1_parking}
+    \end{subfigure}
+    \caption{Open L1.}
+    \label{fig:ablation_open_l1}
+\end{figure}
+
+\subsection{Cube mode, full-frame $L_1$}
+\label{subsec:ablation_cube_l1}
+
+Cube L1 without outliers produces high Chamfer and visible patch misalignment (Figure~\ref{fig:ablation_cube_l1}).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_cubeL1.png}
+        \caption{Pizza}
+        \label{fig:ablation_cube_l1_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_cubel1.png}
+        \caption{Parking meter}
+        \label{fig:ablation_cube_l1_parking}
+    \end{subfigure}
+    \caption{Cube L1.}
+    \label{fig:ablation_cube_l1}
+\end{figure}
+
+\subsection{Open mode, $L_1$ FgBg}
+\label{subsec:ablation_open_l1_fgbg}
+
+FgBg decomposition alone (open mode, no outlier pass) reduces some background energy but does not match outlier-filtered Chamfer (Figure~\ref{fig:ablation_open_l1_fgbg}).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_openL1FgBg.png}
+        \caption{Pizza}
+        \label{fig:ablation_open_l1_fgbg_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_open_l1_fgbg.png}
+        \caption{Parking meter}
+        \label{fig:ablation_open_l1_fgbg_parking}
+    \end{subfigure}
+    \caption{Open L1 FgBg (no outlier filtering).}
+    \label{fig:ablation_open_l1_fgbg}
+\end{figure}
+
+\subsection{Cube mode, $L_1$ FgBg}
+\label{subsec:ablation_cube_l1_fgbg}
+
+Mask loss without outlier rejection still leaves high Chamfer on pizza (Figure~\ref{fig:ablation_cube_l1_fgbg_pizza}); the mesh can look reasonable locally while global error remains large (Section~\ref{subsec:results_best_quant}).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_cubeL1FgBg.png}
+        \caption{Pizza}
+        \label{fig:ablation_cube_l1_fgbg_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_cubel1fgbg.png}
+        \caption{Parking meter}
+        \label{fig:ablation_cube_l1_fgbg_parking}
+    \end{subfigure}
+    \caption{Cube L1 FgBg (no outlier filtering).}
+    \label{fig:ablation_cube_l1_fgbg}
+\end{figure}
+
+\subsection{Open mode, $L_1$, outlier filtering and FPS centers}
+\label{subsec:ablation_open_l1_outliers_fps}
+
+FPS patch placement further stabilizes open-mode training; bidirectional Chamfer on pizza can match or beat cube variants (Figure~\ref{fig:pizza_best_chamfer_bid}), at the cost of longer runtime.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_openL1_outliers_fps.png}
+        \caption{Pizza}
+        \label{fig:ablation_open_l1_out_fps_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_openl1outliersfps.png}
+        \caption{Parking meter}
+        \label{fig:ablation_open_l1_out_fps_parking}
+    \end{subfigure}
+    \caption{Open L1, outlier filtering, FPS centers.}
+    \label{fig:ablation_open_l1_out_fps}
+\end{figure}
+
+\subsection{Cube mode, $L_1$, outlier filtering}
+\label{subsec:ablation_cube_l1_outliers}
+
+Outlier filtering alone (no FgBg) already lowers Chamfer sharply; qualitative mesh improves (Figure~\ref{fig:ablation_cube_l1_out}).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_cubeL1Out.png}
+        \caption{Pizza}
+        \label{fig:ablation_cube_l1_out_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_cubel1_outliers.png}
+        \caption{Parking meter}
+        \label{fig:ablation_cube_l1_out_parking}
+    \end{subfigure}
+    \caption{Cube L1 with outlier filtering.}
+    \label{fig:ablation_cube_l1_out}
+\end{figure}
+
+\subsection{Open mode, $L_1$ FgBg, outlier filtering}
+\label{subsec:ablation_open_l1_fgbg_outliers}
+
+Combining FgBg loss with outlier filtering yields clean renders on both scenes (Figure~\ref{fig:ablation_open_l1_fgbg_out}).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_openL1FgBg_outliers.png}
+        \caption{Pizza}
+        \label{fig:ablation_open_l1_fgbg_out_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_l1_fgbg_outliers.png}
+        \caption{Parking meter}
+        \label{fig:ablation_open_l1_fgbg_out_parking}
+    \end{subfigure}
+    \caption{Open L1 FgBg with outlier filtering.}
+    \label{fig:ablation_open_l1_fgbg_out}
+\end{figure}
+
+\subsection{Cube mode, $L_1$ FgBg, outlier filtering}
+\label{subsec:ablation_cube_l1_fgbg_outliers}
+
+Same configuration as Section~\ref{sec:results_best_cube_outliers}; repeated here for ablation completeness (Figure~\ref{fig:ablation_cube_l1_fgbg_out}).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_cubeL1FgBg_outliers.png}
+        \caption{Pizza}
+        \label{fig:ablation_cube_l1_fgbg_out_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_cubel1fgbg_outliers.png}
+        \caption{Parking meter}
+        \label{fig:ablation_cube_l1_fgbg_out_parking}
+    \end{subfigure}
+    \caption{Cube L1 FgBg with outlier filtering.}
+    \label{fig:ablation_cube_l1_fgbg_out}
+\end{figure}
+
+\subsection{Cube mode, $L_2$ FgBg}
+\label{subsec:ablation_cube_l2_fgbg}
+
+Replacing $L_1$ with $L_2$ in the mask terms yields similar qualitative layout but did not improve Chamfer relative to Cube L1 FgBg Out on either scene (Figure~\ref{fig:ablation_cube_l2}).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/pizza_ablationstudy_cubeL2.png}
+        \caption{Pizza}
+        \label{fig:ablation_cube_l2_pizza}
+    \end{subfigure}
+    \vspace{0.6em}
+    \begin{subfigure}{\textwidth}
+        \centering
+        \resabl{images/conclusion/parkingmetere_ablationstudy_cubel2.png}
+        \caption{Parking meter}
+        \label{fig:ablation_cube_l2_parking}
+    \end{subfigure}
+    \caption{Cube L2 FgBg.}
+    \label{fig:ablation_cube_l2}
+\end{figure}
+
+\section{Comparative Discussion}
+\label{sec:results_comparative}
+
+Three axes dominate the ablation: \textbf{initialization geometry} (open patches on PCA planes vs.\ cube faces), \textbf{loss formulation} (full-frame $L_1$ vs.\ FgBg decomposition), and \textbf{seed hygiene} (outlier filtering, optional FPS centers).
+
+\textbf{Outlier management} is the strongest single factor. Gradient logs on control points (Figures~\ref{fig:pizza_cube_gradients}--\ref{fig:parking_open_gradients}) show that without filtering, optimization is erratic: frequent spikes and higher smoothed gradient norms suggest CPs trapped away from the true surface. With filtering, gradients stabilize and mean magnitude decreases, indicating more consistent updates. Chamfer distance confirms the same story: on pizza cube-mode runs, unidirectional error falls from $\sim 21$--$24$ without outliers to $\sim 0.18$--$2.8$ with outliers (Figure~\ref{fig:pizza_cube_chamfer_uni}). Mask loss alone does not compensate for bad seeds; Cube L1 FgBg without outliers can still look plausible in screenshots while metrics remain poor.
+
+\textbf{FgBg supervision} helps once seeds are clean, by suppressing background floaters and keeping patches inside the mask (Section~\ref{subsec:mask_losses}). It is most effective combined with outlier rejection (Cube L1 FgBg Out).
+
+\textbf{Open vs.\ cube.} Open mode with outliers and FPS achieves excellent bidirectional Chamfer on pizza (Figure~\ref{fig:pizza_best_chamfer_bid}) but cube mode with FgBg Out was preferred for mesh regularity and consistent qualitative results on both scenes, especially the parking meter.
+
+\textbf{$L_2$ FgBg.} Switching to $L_2$ did not outperform $L_1$ FgBg in Chamfer or visual inspection; $L_1$ remained the default for the best configuration.
+
+\section{Comparison with Baseline Methods}
+\label{sec:results_baseline_compare}
+
+Classical segmented 3DGS (photometric $L_1$ on the full cloud, no B\'ezier reparameterization) produces heavy view-dependent artifacts on the parking meter: colored streaks and semi-transparent layers around the object (Figure~\ref{fig:baseline_classic_segmented}). The B\'ezier pipeline, especially with outlier filtering and mask losses, yields explicit surfaces that are easier to inspect and export, at the cost of fixing patch topology at initialization.
+
+\begin{figure}[H]
+    \centering
+    \resbase{images/conclusion/output3dgaussian_classic_segmented.png}
+    \caption{Parking meter: classical 3DGS with segmentation (multi-view renders). Note view-dependent floaters and color bleeding outside the object.}
+    \label{fig:baseline_classic_segmented}
+\end{figure}
+
