@@ -19,6 +19,7 @@
 *.bak
 *.ps
 *.pdf
+!thesis.pdf
 .*.swp
 *.synctex.gz
 .directory
