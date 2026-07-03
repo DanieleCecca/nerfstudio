@@ -123,4 +123,31 @@
   "python.analysis.typeCheckingMode": "basic",
   "python.analysis.diagnosticMode": "workspace",
   "eslint.packageManager": "yarn",
+  "latex-workshop.latex.tools": [
+    {
+      "name": "latexmk-perl-miktex",
+      "command": "C:\\Strawberry\\perl\\bin\\perl.exe",
+      "env": {
+        "PATH": "C:\\Users\\cecca\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64;C:\\Strawberry\\perl\\bin;C:\\Strawberry\\c\\bin;${env:PATH}"
+      },
+      "args": [
+        "C:\\Users\\cecca\\AppData\\Local\\Programs\\MiKTeX\\scripts\\latexmk\\latexmk.pl",
+        "-synctex=1",
+        "-interaction=nonstopmode",
+        "-file-line-error",
+        "-pdflatex=C:/Users/cecca/AppData/Local/Programs/MiKTeX/miktex/bin/x64/pdflatex.exe %O %S",
+        "-pdf",
+        "%DOC%"
+      ]
+    }
+  ],
+  "latex-workshop.latex.recipes": [
+    {
+      "name": "latexmk (perl + MiKTeX)",
+      "tools": [
+        "latexmk-perl-miktex"
+      ]
+    }
+  ],
+  "latex-workshop.latex.recipe.default": "first",
 }

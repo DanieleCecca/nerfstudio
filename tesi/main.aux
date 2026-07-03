@@ -1,0 +1,590 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{lin2025depthanything3}
+\citation{supersplat2024}
+\citation{kerbl2023gaussian}
+\citation{mildenhall2020nerf}
+\citation{kerbl2023gaussian}
+\citation{mildenhall2020nerf}
+\@writefile{toc}{\contentsline {chapter}{\numberline {1}Introduction}{11}{chapter.1}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\@writefile{toc}{\contentsline {section}{\numberline {1.1}Motivation}{11}{section.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {1.2}From Novel View Synthesis to Geometry Reconstruction}{11}{section.1.2}\protected@file@percent }
+\citation{mildenhall2020nerf}
+\citation{kerbl2023gaussian}
+\citation{yang2024depth,yang2024depthanythingv2,lin2025depthanything3}
+\citation{liu2025bezier,kerbl2023gaussian}
+\citation{liu2023groundingdino}
+\citation{ravi2024sam2}
+\@writefile{toc}{\contentsline {section}{\numberline {1.3}Objectives and Contributions}{12}{section.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {1.4}Organization of the Thesis}{12}{section.1.4}\protected@file@percent }
+\citation{hartley2004multiple}
+\citation{schoenberger2016sfm,schoenberger2016mvs}
+\citation{lowe2004sift}
+\@writefile{toc}{\contentsline {chapter}{\numberline {2}State of the Art}{13}{chapter.2}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\@writefile{toc}{\contentsline {section}{\numberline {2.1}Multi-View Geometry}{13}{section.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1.1}Structure-from-Motion}{13}{subsection.2.1.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.1}{\ignorespaces End-to-end SfM pipeline: feature extraction and matching, geometric verification, incremental camera/point estimation, and bundle adjustment.}}{13}{figure.caption.4}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:sfm_pipeline_overview}{{2.1}{13}{End-to-end SfM pipeline: feature extraction and matching, geometric verification, incremental camera/point estimation, and bundle adjustment}{figure.caption.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Keypoint extraction (SIFT).}{14}{section*.5}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.2}{\ignorespaces Difference-of-Gaussians (DoG) used for scale-space extrema detection in SIFT.}}{14}{figure.caption.6}\protected@file@percent }
+\newlabel{fig:sift_dog}{{2.2}{14}{Difference-of-Gaussians (DoG) used for scale-space extrema detection in SIFT}{figure.caption.6}{}}
+\@writefile{toc}{\contentsline {paragraph}{Descriptor matching.}{14}{section*.7}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.3}{\ignorespaces SIFT keypoints detected over an image, before geometric matching across views.}}{15}{figure.caption.8}\protected@file@percent }
+\newlabel{fig:sift_keypoints_only}{{2.3}{15}{SIFT keypoints detected over an image, before geometric matching across views}{figure.caption.8}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2.4}{\ignorespaces Example of SIFT keypoint correspondences between two views used for geometric verification and triangulation.}}{15}{figure.caption.9}\protected@file@percent }
+\newlabel{fig:sift_keypoint_matching}{{2.4}{15}{Example of SIFT keypoint correspondences between two views used for geometric verification and triangulation}{figure.caption.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Camera model and projection.}{15}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{SfM reconstruction and the observation graph.}{16}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Epipolar geometry.}{16}{section*.12}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.5}{\ignorespaces Two-view epipolar geometry with baseline, epipoles, and epipolar lines satisfying $x_2^\top F x_1=0$.}}{16}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:epipolar_geometry}{{2.5}{16}{Two-view epipolar geometry with baseline, epipoles, and epipolar lines satisfying $x_2^\top F x_1=0$}{figure.caption.13}{}}
+\citation{fischler1981ransac}
+\@writefile{toc}{\contentsline {paragraph}{Essential matrix (calibrated two-view geometry).}{17}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Fundamental matrix estimation.}{17}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1.2}Camera Pose Estimation}{17}{subsection.2.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{PnP algorithms.}{18}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1.3}Sparse 3D Reconstruction}{18}{subsection.2.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Triangulation objective.}{18}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Linear initialization.}{18}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Bundle adjustment.}{18}{section*.19}\protected@file@percent }
+\citation{mildenhall2020nerf}
+\citation{mildenhall2020nerf}
+\@writefile{toc}{\contentsline {section}{\numberline {2.2}Neural Scene Representations}{19}{section.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2.1}Neural Radiance Fields}{19}{subsection.2.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Neural Radiance Fields (NeRF).}{19}{section*.20}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.6}{\ignorespaces NeRF ray-based rendering: sample evaluation along rays and volumetric compositing of color and density.}}{20}{figure.caption.21}\protected@file@percent }
+\newlabel{fig:nerf_ray_rendering}{{2.6}{20}{NeRF ray-based rendering: sample evaluation along rays and volumetric compositing of color and density}{figure.caption.21}{}}
+\@writefile{toc}{\contentsline {paragraph}{Ray casting and volume rendering.}{20}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Discrete approximation.}{20}{section*.23}\protected@file@percent }
+\citation{kerbl2023gaussian}
+\citation{zwicker2001surface,zwicker2002ewa}
+\@writefile{toc}{\contentsline {paragraph}{Training procedure.}{21}{section*.24}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2.2}3D Gaussian Splatting}{21}{subsection.2.2.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.7}{\ignorespaces Representative qualitative reconstruction/rendering result obtained with 3D Gaussian Splatting.}}{21}{figure.caption.25}\protected@file@percent }
+\newlabel{fig:nerf_vs_3dgs}{{2.7}{21}{Representative qualitative reconstruction/rendering result obtained with 3D Gaussian Splatting}{figure.caption.25}{}}
+\citation{zwicker2001surface}
+\@writefile{toc}{\contentsline {subsubsection}{Pipeline overview}{22}{section*.26}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.8}{\ignorespaces 3DGS pipeline: SfM-based data processing, Gaussian initialization, splatting-based rendering and alpha compositing, differentiable optimization of Gaussian parameters, adaptive density control (clone, split, prune), tile-based rasterization for efficient screen-space processing.}}{22}{figure.caption.27}\protected@file@percent }
+\newlabel{fig:3dgs_pipeline}{{2.8}{22}{3DGS pipeline: SfM-based data processing, Gaussian initialization, splatting-based rendering and alpha compositing, differentiable optimization of Gaussian parameters, adaptive density control (clone, split, prune), tile-based rasterization for efficient screen-space processing}{figure.caption.27}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Relation with previous splatting methods}{22}{section*.28}\protected@file@percent }
+\citation{zwicker2002ewa}
+\citation{schoenberger2016sfm,schoenberger2016mvs}
+\@writefile{toc}{\contentsline {paragraph}{Surface splatting.}{23}{section*.29}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.9}{\ignorespaces Surface splatting: each point is associated with a local surface element (surfel) that projects to an elliptical footprint.}}{23}{figure.caption.30}\protected@file@percent }
+\newlabel{fig:surface_splatting}{{2.9}{23}{Surface splatting: each point is associated with a local surface element (surfel) that projects to an elliptical footprint}{figure.caption.30}{}}
+\@writefile{toc}{\contentsline {paragraph}{Volume splatting and EWA volume splatting.}{23}{section*.31}\protected@file@percent }
+\citation{kerbl2023gaussian,tancik2023nerfstudio}
+\@writefile{toc}{\contentsline {subsubsection}{Gaussian Parameterization}{24}{section*.32}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.10}{\ignorespaces Single anisotropic 3D Gaussian primitive and its geometric parameters (center, covariance shape, and orientation).}}{24}{figure.caption.33}\protected@file@percent }
+\newlabel{fig:gaussian_primitive_param}{{2.10}{24}{Single anisotropic 3D Gaussian primitive and its geometric parameters (center, covariance shape, and orientation)}{figure.caption.33}{}}
+\citation{zwicker2002ewa}
+\@writefile{toc}{\contentsline {subsubsection}{Splatting and rendering}{25}{section*.34}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.11}{\ignorespaces Multi-view projections involved in 3D Gaussian Splatting, relating camera observations to projected Gaussian structure.}}{25}{figure.caption.35}\protected@file@percent }
+\newlabel{fig:multiview_projection_3dgs}{{2.11}{25}{Multi-view projections involved in 3D Gaussian Splatting, relating camera observations to projected Gaussian structure}{figure.caption.35}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Transformation from world space to camera space}{25}{section*.36}\protected@file@percent }
+\citation{zwicker2002ewa}
+\@writefile{toc}{\contentsline {subsubsection}{Projection to ray space}{26}{section*.37}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{From ray space to the image-plane footprint}{26}{section*.38}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{Projection to screen space}{27}{section*.39}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{Rendering via Alpha Compositing}{27}{section*.40}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.12}{\ignorespaces Front-to-back alpha compositing intuition for accumulating Gaussian contributions along visibility order.}}{28}{figure.caption.41}\protected@file@percent }
+\newlabel{fig:alpha_compositing_3dgs}{{2.12}{28}{Front-to-back alpha compositing intuition for accumulating Gaussian contributions along visibility order}{figure.caption.41}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Photometric Optimization}{28}{section*.42}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{Adaptive density control}{28}{section*.43}\protected@file@percent }
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces Optimization and Densification}}{29}{algorithm.1}\protected@file@percent }
+\newlabel{alg:optimization_densification_3dgs}{{1}{29}{Optimization and Densification}{algorithm.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2.13}{\ignorespaces Adaptive density control in 3DGS (clone/split/prune) to improve coverage and local geometric detail.}}{30}{figure.caption.44}\protected@file@percent }
+\newlabel{fig:3dgs_density_control}{{2.13}{30}{Adaptive density control in 3DGS (clone/split/prune) to improve coverage and local geometric detail}{figure.caption.44}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Tile-based rasterization and visibility ordering}{30}{section*.45}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.14}{\ignorespaces 3D Gaussian Splatting rendering flow: Gaussian parameterization, projection to screen-space ellipses, tile assignment, depth sorting, and compositing.}}{30}{figure.caption.46}\protected@file@percent }
+\newlabel{fig:3dgs_projection_rasterization}{{2.14}{30}{3D Gaussian Splatting rendering flow: Gaussian parameterization, projection to screen-space ellipses, tile assignment, depth sorting, and compositing}{figure.caption.46}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Limitations for Geometry Recovery}{30}{section*.47}\protected@file@percent }
+\@writefile{loa}{\contentsline {algorithm}{\numberline {2}{\ignorespaces GPU Software Rasterization of 3D Gaussians}}{31}{algorithm.2}\protected@file@percent }
+\newlabel{alg:rasterize_blending_3dgs}{{2}{31}{GPU Software Rasterization of 3D Gaussians}{algorithm.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2.15}{\ignorespaces Example of floating Gaussians (floaters): primitives that reduce $\mathcal  {L}_{\mathrm  {rgb}}$ where they are seen but sit at geometrically invalid 3D locations.}}{31}{figure.caption.48}\protected@file@percent }
+\newlabel{fig:floaters_example}{{2.15}{31}{Example of floating Gaussians (floaters): primitives that reduce $\mathcal {L}_{\mathrm {rgb}}$ where they are seen but sit at geometrically invalid 3D locations}{figure.caption.48}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {2.3}Depth in Neural Rendering}{31}{section.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3.1}Depth as Expected Value Along a Ray}{32}{subsection.2.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Discrete volume rendering along a ray.}{32}{section*.49}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Accumulated depth vs.\ expected depth.}{32}{section*.50}\protected@file@percent }
+\newlabel{eq:depth_accumulated}{{2.1}{32}{Accumulated depth vs.\ expected depth}{equation.2.1}{}}
+\newlabel{eq:depth_expected}{{2.2}{32}{Accumulated depth vs.\ expected depth}{equation.2.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Relationship to compositing weights.}{32}{section*.51}\protected@file@percent }
+\citation{lin2025depthanything3}
+\@writefile{toc}{\contentsline {paragraph}{Semantic differences and failure modes.}{33}{section*.52}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3.2}Monocular Metric Depth Estimation}{33}{subsection.2.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{From relative predictions to metric depth.}{33}{section*.53}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3.3}Depth Anything v3}{33}{subsection.2.3.3}\protected@file@percent }
+\citation{yang2024depth}
+\citation{yang2024depthanythingv2}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\@writefile{toc}{\contentsline {paragraph}{Positioning relative to Depth Anything 1--2.}{34}{section*.54}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Core outputs: depth maps and ray maps.}{34}{section*.55}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Architecture (what is minimal and what is not).}{34}{section*.56}\protected@file@percent }
+\citation{lin2025depthanything3}
+\citation{yang2024depth,yang2024depthanythingv2}
+\citation{lin2025depthanything3}
+\citation{yang2024depthanythingv2,lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\@writefile{lof}{\contentsline {figure}{\numberline {2.16}{\ignorespaces Depth Anything 3 architecture (adapted from \cite  {lin2025depthanything3}). $N$ input views are patch-embedded and processed by a DINO transformer with alternating within-view ($L_s$) and cross-view ($L_g$) self-attention. A dual-DPT head predicts per-view depth and ray maps; depth is supervised against a teacher model ($\mathcal  {L}_D$), while ray maps and lifted 3D points are trained with $\mathcal  {L}_M$ and $\mathcal  {L}_P$. When camera parameters are unknown, a learnable camera token feeds an optional pose decoder ($\mathcal  {L}_C$).}}{35}{figure.caption.57}\protected@file@percent }
+\newlabel{fig:da3_pipeline}{{2.16}{35}{Depth Anything 3 architecture (adapted from \cite {lin2025depthanything3}). $N$ input views are patch-embedded and processed by a DINO transformer with alternating within-view ($L_s$) and cross-view ($L_g$) self-attention. A dual-DPT head predicts per-view depth and ray maps; depth is supervised against a teacher model ($\mathcal {L}_D$), while ray maps and lifted 3D points are trained with $\mathcal {L}_M$ and $\mathcal {L}_P$. When camera parameters are unknown, a learnable camera token feeds an optional pose decoder ($\mathcal {L}_C$)}{figure.caption.57}{}}
+\@writefile{toc}{\contentsline {paragraph}{Training as teacher--student with pseudo-depth alignment (padre--figlio).}{35}{section*.58}\protected@file@percent }
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\citation{lin2025depthanything3}
+\@writefile{toc}{\contentsline {paragraph}{Implementation-scale training details (why DA3 is not ``just a bigger DA2'').}{36}{section*.59}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Use in this thesis.}{36}{section*.60}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2.4}Surface-Based Representations}{36}{section.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4.1}B\'ezier Curves and Surfaces}{36}{subsection.2.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Bernstein basis and B\'ezier curves.}{37}{section*.61}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2.17}{\ignorespaces B\'ezier curve example with control polygon and resulting smooth trajectory, illustrating Bernstein interpolation and convex-hull behavior.}}{37}{figure.caption.62}\protected@file@percent }
+\newlabel{fig:bezier_curve_example}{{2.17}{37}{B\'ezier curve example with control polygon and resulting smooth trajectory, illustrating Bernstein interpolation and convex-hull behavior}{figure.caption.62}{}}
+\@writefile{toc}{\contentsline {paragraph}{Geometric meaning of control points.}{37}{section*.63}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Tensor-product B\'ezier surfaces.}{37}{section*.64}\protected@file@percent }
+\citation{liu2025bezier}
+\citation{liu2025bezier,kerbl2023gaussian}
+\@writefile{lof}{\contentsline {figure}{\numberline {2.18}{\ignorespaces Tensor-product B\'ezier surface with control net: variation along $(u,v)$ generates a smooth parametric patch in $\mathbb  {R}^3$.}}{38}{figure.caption.65}\protected@file@percent }
+\newlabel{fig:bezier_surface_example}{{2.18}{38}{Tensor-product B\'ezier surface with control net: variation along $(u,v)$ generates a smooth parametric patch in $\mathbb {R}^3$}{figure.caption.65}{}}
+\@writefile{toc}{\contentsline {paragraph}{Local shape control and continuity across patches.}{38}{section*.66}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4.2}B\'ezier-Based Splatting Approaches}{38}{subsection.2.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{From curves in 2D to surfaces in 3D (conceptual lift).}{38}{section*.67}\protected@file@percent }
+\citation{liu2025bezier}
+\citation{liu2025bezier}
+\citation{liu2023groundingdino}
+\citation{ravi2024sam2}
+\@writefile{toc}{\contentsline {paragraph}{How this thesis uses surfaces ``like curves'' at a high level.}{39}{section*.68}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Pruning/densification as a geometric analogue.}{39}{section*.69}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2.5}Semantic Object Segmentation}{39}{section.2.5}\protected@file@percent }
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5.1}GroundingDINO}{40}{subsection.2.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{From closed-set detection to language-grounded detection.}{40}{section*.70}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Architecture overview.}{40}{section*.71}\protected@file@percent }
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\@writefile{lof}{\contentsline {figure}{\numberline {2.19}{\ignorespaces Grounding DINO architecture overview with image/text encoders, cross-modal fusion, and language-guided detection outputs.}}{41}{figure.caption.72}\protected@file@percent }
+\newlabel{fig:grounding_dino_architecture_overview}{{2.19}{41}{Grounding DINO architecture overview with image/text encoders, cross-modal fusion, and language-guided detection outputs}{figure.caption.72}{}}
+\@writefile{toc}{\contentsline {paragraph}{Language-guided query selection (mathematical intuition).}{41}{section*.73}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Cross-modality decoder.}{41}{section*.74}\protected@file@percent }
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{liu2023groundingdino}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\@writefile{toc}{\contentsline {paragraph}{Sub-sentence text representation.}{42}{section*.75}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Training objective and matching.}{42}{section*.76}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5.2}SAM2}{42}{subsection.2.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Task definition: from SAM (image) to masklets (video).}{42}{section*.77}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Architecture.}{42}{section*.78}\protected@file@percent }
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\citation{ravi2024sam2}
+\@writefile{lof}{\contentsline {figure}{\numberline {2.20}{\ignorespaces SAM~2 streaming architecture with memory bank and memory attention for promptable segmentation across frames.}}{43}{figure.caption.79}\protected@file@percent }
+\newlabel{fig:sam2_memory_bank_attention}{{2.20}{43}{SAM~2 streaming architecture with memory bank and memory attention for promptable segmentation across frames}{figure.caption.79}{}}
+\@writefile{toc}{\contentsline {paragraph}{Training and data.}{43}{section*.80}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Use in this thesis.}{43}{section*.81}\protected@file@percent }
+\citation{tancik2023nerfstudio}
+\@writefile{toc}{\contentsline {chapter}{\numberline {3}Tools and Frameworks}{44}{chapter.3}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\newlabel{chap:tools}{{3}{44}{Tools and Frameworks}{chapter.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3.1}Data preparation}{44}{section.3.1}\protected@file@percent }
+\newlabel{sec:data_preparation}{{3.1}{44}{Data preparation}{section.3.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3.2}Nerfstudio and Splatfacto}{44}{section.3.2}\protected@file@percent }
+\newlabel{sec:splatfacto_gsplat}{{3.2}{44}{Nerfstudio and Splatfacto}{section.3.2}{}}
+\citation{kerbl2023gaussian}
+\citation{supersplat2024}
+\@writefile{lof}{\contentsline {figure}{\numberline {3.1}{\ignorespaces Nerfstudio training pipeline}}{45}{figure.caption.82}\protected@file@percent }
+\newlabel{fig:nerfstudio_pipeline}{{3.1}{45}{Nerfstudio training pipeline}{figure.caption.82}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3.3}Pretrained models (Hugging Face Hub)}{45}{section.3.3}\protected@file@percent }
+\newlabel{sec:huggingface}{{3.3}{45}{Pretrained models (Hugging Face Hub)}{section.3.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3.1}Depth Anything 3 (metric depth)}{45}{subsection.3.3.1}\protected@file@percent }
+\citation{zhou2018open3d}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3.2}Grounding DINO and SAM~2 (segmentation)}{46}{subsection.3.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3.4}Auxiliary tools}{46}{section.3.4}\protected@file@percent }
+\citation{kerbl2023gaussian,tancik2023nerfstudio}
+\citation{supersplat2024}
+\citation{supersplat2024}
+\@writefile{toc}{\contentsline {chapter}{\numberline {4}Methodology}{47}{chapter.4}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\newlabel{chap:methodology}{{4}{47}{Methodology}{chapter.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4.1}Baseline: Classical 3D Gaussian Splatting}{47}{section.4.1}\protected@file@percent }
+\newlabel{sec:baseline_3dgs}{{4.1}{47}{Baseline: Classical 3D Gaussian Splatting}{section.4.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1.1}Photometric Loss}{47}{subsection.4.1.1}\protected@file@percent }
+\newlabel{subsec:baseline_photometric}{{4.1.1}{47}{Photometric Loss}{subsection.4.1.1}{}}
+\newlabel{eq:baseline_photometric}{{4.3}{47}{Photometric Loss}{equation.4.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.1}{\ignorespaces Baseline Splatfacto checkpoint exported and inspected in \textbf  {SuperSplat} \cite  {supersplat2024}, a web-based 3DGS viewer (\url  {https://superspl.at/}). \textbf  {Top left:} scene render with semi-transparent Gaussian splats (unstructured early or diagnostic view). \textbf  {Top right:} shaded RGB rendering of the reconstructed scene. \textbf  {Bottom left:} Gaussian \emph  {centers} visualized as point sprites (``puntini'') overlaid on the render. \textbf  {Bottom right:} anisotropic Gaussian \emph  {ellipsoids} drawn with wireframe contours, showing the extent and orientation of each primitive.}}{48}{figure.caption.83}\protected@file@percent }
+\newlabel{fig:baseline_viewer_outputs}{{4.1}{48}{Baseline Splatfacto checkpoint exported and inspected in \textbf {SuperSplat} \cite {supersplat2024}, a web-based 3DGS viewer (\url {https://superspl.at/}). \textbf {Top left:} scene render with semi-transparent Gaussian splats (unstructured early or diagnostic view). \textbf {Top right:} shaded RGB rendering of the reconstructed scene. \textbf {Bottom left:} Gaussian \emph {centers} visualized as point sprites (``puntini'') overlaid on the render. \textbf {Bottom right:} anisotropic Gaussian \emph {ellipsoids} drawn with wireframe contours, showing the extent and orientation of each primitive}{figure.caption.83}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1.2}Expected Depth Estimation}{48}{subsection.4.1.2}\protected@file@percent }
+\newlabel{subsec:baseline_expected_depth}{{4.1.2}{48}{Expected Depth Estimation}{subsection.4.1.2}{}}
+\newlabel{eq:baseline_depth_expected}{{4.4}{48}{Expected Depth Estimation}{equation.4.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.2}{\ignorespaces Expected depth $d^{\mathrm  {exp}}$ from the baseline rasterizer (\texttt  {RGB+ED}), visualized in the Nerfstudio viewer as a false-color map together with the training camera poses. Closer surfaces appear in cooler colors and farther ones in warmer colors (default \texttt  {turbo} colormap); background and low-accumulation pixels remain dark. This map is used later as the rendered-depth target when \texttt  {loss=depth} is enabled (Section~\ref {sec:depth_supervised}).}}{49}{figure.caption.84}\protected@file@percent }
+\newlabel{fig:baseline_expected_depth}{{4.2}{49}{Expected depth $d^{\mathrm {exp}}$ from the baseline rasterizer (\texttt {RGB+ED}), visualized in the Nerfstudio viewer as a false-color map together with the training camera poses. Closer surfaces appear in cooler colors and farther ones in warmer colors (default \texttt {turbo} colormap); background and low-accumulation pixels remain dark. This map is used later as the rendered-depth target when \texttt {loss=depth} is enabled (Section~\ref {sec:depth_supervised})}{figure.caption.84}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1.3}Observed Geometric Limitations}{49}{subsection.4.1.3}\protected@file@percent }
+\newlabel{subsec:baseline_limitations}{{4.1.3}{49}{Observed Geometric Limitations}{subsection.4.1.3}{}}
+\citation{yang2024depthanythingv2}
+\@writefile{toc}{\contentsline {section}{\numberline {4.2}Depth-Supervised Optimization}{50}{section.4.2}\protected@file@percent }
+\newlabel{sec:depth_supervised}{{4.2}{50}{Depth-Supervised Optimization}{section.4.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2.1}Ground Truth Depth Generation}{50}{subsection.4.2.1}\protected@file@percent }
+\newlabel{subsec:da3_gt_depth}{{4.2.1}{50}{Ground Truth Depth Generation}{subsection.4.2.1}{}}
+\newlabel{eq:da3_metric}{{4.5}{50}{Ground Truth Depth Generation}{equation.4.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Preprocessing and caching.}{50}{section*.85}\protected@file@percent }
+\newlabel{lst:da3_metric}{{4.1}{50}{Metric conversion in \code {DA3MetricDepthEstimator.infer\_metric\_depth} (\filepath {da3\_depth.py})}{lstlisting.4.1}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.1}{\ignorespaces Metric conversion in \nolinkurl  {DA3MetricDepthEstimator.infer\_metric\_depth} (\nolinkurl  {da3\_depth.py}).}}{50}{lstlisting.4.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4.3}{\ignorespaces Example DA3 metric depth target ($d_{\mathrm  {DA3}}$) visualized in the Nerfstudio viewer for one training view. Warmer colors denote larger camera $z$-depth.}}{51}{figure.caption.86}\protected@file@percent }
+\newlabel{fig:da3_depth_target}{{4.3}{51}{Example DA3 metric depth target ($d_{\mathrm {DA3}}$) visualized in the Nerfstudio viewer for one training view. Warmer colors denote larger camera $z$-depth}{figure.caption.86}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2.2}Depth Loss Formulation}{51}{subsection.4.2.2}\protected@file@percent }
+\newlabel{subsec:depth_loss}{{4.2.2}{51}{Depth Loss Formulation}{subsection.4.2.2}{}}
+\newlabel{eq:depth_loss}{{4.6}{51}{Depth Loss Formulation}{equation.4.6}{}}
+\newlabel{lst:depth_loss_code}{{4.2}{51}{Depth branch in \texttt {SplatfactoModel.get\_loss\_dict} (\filepath {splatfacto.py})}{lstlisting.4.2}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.2}{\ignorespaces Depth branch in \texttt  {SplatfactoModel.get\_loss\_dict} (\nolinkurl  {splatfacto.py}).}}{51}{lstlisting.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2.3}Joint Optimization Strategy}{52}{subsection.4.2.3}\protected@file@percent }
+\newlabel{subsec:depth_joint_opt}{{4.2.3}{52}{Joint Optimization Strategy}{subsection.4.2.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Role of COLMAP color initialization.}{52}{section*.87}\protected@file@percent }
+\newlabel{lst:colmap_color_init}{{4.3}{52}{Color initialization from COLMAP seed points (\filepath {splatfacto.py})}{lstlisting.4.3}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.3}{\ignorespaces Color initialization from COLMAP seed points (\nolinkurl  {splatfacto.py}).}}{52}{lstlisting.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2.4}Qualitative Trade-offs: RGB vs.\ Depth Loss}{52}{subsection.4.2.4}\protected@file@percent }
+\newlabel{subsec:depth_rgb_tradeoff}{{4.2.4}{52}{Qualitative Trade-offs: RGB vs.\ Depth Loss}{subsection.4.2.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Training with $\mathcal  {L}_{\mathrm  {rgb}}$ (photometric loss).}{52}{section*.88}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Training with $\mathcal  {L}_{\mathrm  {depth}}$ (depth loss).}{53}{section*.89}\protected@file@percent }
+\newlabel{fig:rgb_loss_render}{{4.4a}{53}{\texttt {loss=rgb}}{figure.caption.90}{}}
+\newlabel{sub@fig:rgb_loss_render}{{a}{53}{\texttt {loss=rgb}}{figure.caption.90}{}}
+\newlabel{fig:depth_loss_render}{{4.4b}{53}{\texttt {loss=depth}}{figure.caption.90}{}}
+\newlabel{sub@fig:depth_loss_render}{{b}{53}{\texttt {loss=depth}}{figure.caption.90}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.4}{\ignorespaces Rendered RGB on held-out views after training with photometric loss (left) versus depth loss (right). Overall color layout is similar because both runs share COLMAP color initialization, even though only the left model optimizes appearance.}}{53}{figure.caption.90}\protected@file@percent }
+\newlabel{fig:rgb_depth_render_compare}{{4.4}{53}{Rendered RGB on held-out views after training with photometric loss (left) versus depth loss (right). Overall color layout is similar because both runs share COLMAP color initialization, even though only the left model optimizes appearance}{figure.caption.90}{}}
+\citation{supersplat2024}
+\citation{supersplat2024}
+\newlabel{fig:rgb_loss_depthmap}{{4.5a}{54}{\texttt {loss=rgb}}{figure.caption.91}{}}
+\newlabel{sub@fig:rgb_loss_depthmap}{{a}{54}{\texttt {loss=rgb}}{figure.caption.91}{}}
+\newlabel{fig:depth_loss_depthmap}{{4.5b}{54}{\texttt {loss=depth}}{figure.caption.91}{}}
+\newlabel{sub@fig:depth_loss_depthmap}{{b}{54}{\texttt {loss=depth}}{figure.caption.91}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.5}{\ignorespaces Exported expected depth $d^{\mathrm  {exp}}$ for the same scene: photometric training (left) shows sharper object silhouettes but noisier background and a narrower effective depth range; depth training (right) yields smoother background depth closer to the DA3 prior, with softer object detail.}}{54}{figure.caption.91}\protected@file@percent }
+\newlabel{fig:rgb_depth_depth_compare}{{4.5}{54}{Exported expected depth $d^{\mathrm {exp}}$ for the same scene: photometric training (left) shows sharper object silhouettes but noisier background and a narrower effective depth range; depth training (right) yields smoother background depth closer to the DA3 prior, with softer object detail}{figure.caption.91}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.6}{\ignorespaces SuperSplat: RGB vs.\ depth loss}}{54}{figure.caption.92}\protected@file@percent }
+\newlabel{fig:supersplat_rgb_vs_depth}{{4.6}{54}{SuperSplat: RGB vs.\ depth loss}{figure.caption.92}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2.5}Failure Modes and Instabilities}{54}{subsection.4.2.5}\protected@file@percent }
+\newlabel{subsec:depth_failure}{{4.2.5}{54}{Failure Modes and Instabilities}{subsection.4.2.5}{}}
+\citation{liu2025bezier}
+\@writefile{toc}{\contentsline {section}{\numberline {4.3}Structural Modification via B\'ezier Surfaces}{55}{section.4.3}\protected@file@percent }
+\newlabel{sec:bezier_structural}{{4.3}{55}{Structural Modification via B\'ezier Surfaces}{section.4.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.1}Semantic Object Isolation}{55}{subsection.4.3.1}\protected@file@percent }
+\newlabel{subsec:semantic_isolation}{{4.3.1}{55}{Semantic Object Isolation}{subsection.4.3.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.7}{\ignorespaces Example SAM~2 masks obtained from a text prompt (here, a chair) on three training views. Each mask defines the image regions that vote for object labels on projected COLMAP seed points.}}{56}{figure.caption.93}\protected@file@percent }
+\newlabel{fig:bezier_segmentation_example}{{4.7}{56}{Example SAM~2 masks obtained from a text prompt (here, a chair) on three training views. Each mask defines the image regions that vote for object labels on projected COLMAP seed points}{figure.caption.93}{}}
+\@writefile{toc}{\contentsline {paragraph}{Configuration.}{56}{section*.94}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.2}Seed Point Preprocessing}{56}{subsection.4.3.2}\protected@file@percent }
+\newlabel{subsec:seed_preprocessing}{{4.3.2}{56}{Seed Point Preprocessing}{subsection.4.3.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{k-NN Outlier Filtering}{56}{section*.95}\protected@file@percent }
+\newlabel{subsec:knn_outlier}{{4.3.2}{56}{k-NN Outlier Filtering}{section*.95}{}}
+\newlabel{eq:knn_mean_dist}{{4.7}{57}{k-NN Outlier Filtering}{equation.4.7}{}}
+\@writefile{loa}{\contentsline {algorithm}{\numberline {3}{\ignorespaces k-NN outlier filtering of B\'ezier seed points (\nolinkurl  {filter\_seed\_points\_outlier\_knn\_mean})}}{57}{algorithm.3}\protected@file@percent }
+\newlabel{alg:knn_outlier}{{3}{57}{k-NN outlier filtering of B\'ezier seed points (\code {filter\_seed\_points\_outlier\_knn\_mean})}{algorithm.3}{}}
+\newlabel{lst:knn_outlier}{{4.4}{57}{Core loop in \texttt {filter\_seed\_points\_outlier\_knn\_mean} (abridged)}{lstlisting.4.4}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.4}{\ignorespaces Core loop in \texttt  {filter\_seed\_points\_outlier\_knn\_mean} (abridged).}}{57}{lstlisting.4.4}\protected@file@percent }
+\newlabel{lst:knn_call}{{4.5}{58}{Call site before B\'ezier patch fitting (\filepath {splatfacto.py})}{lstlisting.4.5}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.5}{\ignorespaces Call site before B\'ezier patch fitting (\nolinkurl  {splatfacto.py}).}}{58}{lstlisting.4.5}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4.8}{\ignorespaces Seed outlier \emph  {before} $k$-NN filtering: a single mislabeled COLMAP seed (red circle) far from the chair cluster.}}{58}{figure.caption.96}\protected@file@percent }
+\newlabel{fig:bezier_outlier_seed}{{4.8}{58}{Seed outlier \emph {before} $k$-NN filtering: a single mislabeled COLMAP seed (red circle) far from the chair cluster}{figure.caption.96}{}}
+\newlabel{fig:bezier_outlier_cloud}{{4.9a}{58}{Full seed point cloud}{figure.caption.97}{}}
+\newlabel{sub@fig:bezier_outlier_cloud}{{a}{58}{Full seed point cloud}{figure.caption.97}{}}
+\newlabel{fig:bezier_outlier_gaussians}{{4.9b}{58}{Anisotropic Gaussians}{figure.caption.97}{}}
+\newlabel{sub@fig:bezier_outlier_gaussians}{{b}{58}{Anisotropic Gaussians}{figure.caption.97}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.9}{\ignorespaces B\'ezier-mode 3D Gaussian output when outlier seeds are not removed. \textbf  {(a)} COLMAP seed point cloud with all points assigned to the object class (including outliers). \textbf  {(b)} Spurious, highly anisotropic Gaussians produced from such seeds (SuperSplat).}}{58}{figure.caption.97}\protected@file@percent }
+\newlabel{fig:bezier_outliers_output}{{4.9}{58}{B\'ezier-mode 3D Gaussian output when outlier seeds are not removed. \textbf {(a)} COLMAP seed point cloud with all points assigned to the object class (including outliers). \textbf {(b)} Spurious, highly anisotropic Gaussians produced from such seeds (SuperSplat)}{figure.caption.97}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.3}B\'ezier Surface Initialization}{58}{subsection.4.3.3}\protected@file@percent }
+\newlabel{subsec:bezier_init}{{4.3.3}{58}{B\'ezier Surface Initialization}{subsection.4.3.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Control Point Estimation}{59}{section*.98}\protected@file@percent }
+\newlabel{subsec:bezier_cp_estimation}{{4.3.3}{59}{Control Point Estimation}{section*.98}{}}
+\@writefile{toc}{\contentsline {paragraph}{Open-surface patches.}{59}{section*.99}\protected@file@percent }
+\@writefile{loa}{\contentsline {algorithm}{\numberline {4}{\ignorespaces Open-mode B\'ezier control-point initialization (per class, per patch)}}{59}{algorithm.4}\protected@file@percent }
+\newlabel{alg:bezier_cp_open}{{4}{59}{Open-mode B\'ezier control-point initialization (per class, per patch)}{algorithm.4}{}}
+\newlabel{lst:planar_cp}{{4.6}{59}{Planar control grid from a $k$-NN neighborhood (\filepath {bezier\_surface.py})}{lstlisting.4.6}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.6}{\ignorespaces Planar control grid from a $k$-NN neighborhood (\nolinkurl  {bezier\_surface.py}).}}{59}{lstlisting.4.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Cube-mode patches.}{60}{section*.100}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{Surface Sampling and Gaussian Seeding}{60}{section*.101}\protected@file@percent }
+\newlabel{subsec:bezier_surface_sampling}{{4.3.3}{60}{Surface Sampling and Gaussian Seeding}{section*.101}{}}
+\@writefile{toc}{\contentsline {paragraph}{Local tangent frame.}{60}{section*.102}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Anisotropic scales.}{60}{section*.103}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Appearance and semantics.}{61}{section*.104}\protected@file@percent }
+\@writefile{loa}{\contentsline {algorithm}{\numberline {5}{\ignorespaces From B\'ezier patch samples to initial Gaussian parameters (open mode)}}{61}{algorithm.5}\protected@file@percent }
+\newlabel{alg:bezier_gaussian_seed}{{5}{61}{From B\'ezier patch samples to initial Gaussian parameters (open mode)}{algorithm.5}{}}
+\newlabel{lst:bezier_sample}{{4.7}{61}{Open-mode sampling and Gaussian frames (\filepath {splatfacto.py}, simplified)}{lstlisting.4.7}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.7}{\ignorespaces Open-mode sampling and Gaussian frames (\nolinkurl  {splatfacto.py}, simplified).}}{61}{lstlisting.4.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.4}B\'ezier Representations}{61}{subsection.4.3.4}\protected@file@percent }
+\newlabel{subsec:bezier_representations}{{4.3.4}{61}{B\'ezier Representations}{subsection.4.3.4}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Open-Surface Mode}{61}{section*.105}\protected@file@percent }
+\newlabel{subsec:bezier_open}{{4.3.4}{61}{Open-Surface Mode}{section*.105}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Cube-Based B\'ezier Surfaces}{62}{section*.106}\protected@file@percent }
+\newlabel{subsec:bezier_cube}{{4.3.4}{62}{Cube-Based B\'ezier Surfaces}{section*.106}{}}
+\newlabel{lst:bezier_cube}{{4.8}{62}{Cube AABB and shared control points (\filepath {bezier\_surface.py})}{lstlisting.4.8}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.8}{\ignorespaces Cube AABB and shared control points (\nolinkurl  {bezier\_surface.py}).}}{62}{lstlisting.4.8}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4.10}{\ignorespaces Cube-mode initialization for a segmented object (classic car): COLMAP seed points (colored by SfM RGB) lie inside the object AABB $[\mathbf  {b}_{\min },\mathbf  {b}_{\max }]$ (semi-transparent box). The six faces of this box host the shared B\'ezier control lattice; $k\times k$ cubic patches per face are anchored to the lattice vertices merged at edges and corners.}}{63}{figure.caption.107}\protected@file@percent }
+\newlabel{fig:bezier_cube_box}{{4.10}{63}{Cube-mode initialization for a segmented object (classic car): COLMAP seed points (colored by SfM RGB) lie inside the object AABB $[\mathbf {b}_{\min },\mathbf {b}_{\max }]$ (semi-transparent box). The six faces of this box host the shared B\'ezier control lattice; $k\times k$ cubic patches per face are anchored to the lattice vertices merged at edges and corners}{figure.caption.107}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.5}B\'ezier Surface Parameterization}{63}{subsection.4.3.5}\protected@file@percent }
+\newlabel{subsec:bezier_textures}{{4.3.5}{63}{B\'ezier Surface Parameterization}{subsection.4.3.5}{}}
+\newlabel{eq:texture_index}{{4.10}{63}{B\'ezier Surface Parameterization}{equation.4.10}{}}
+\@writefile{toc}{\contentsline {paragraph}{In other words.}{63}{section*.108}\protected@file@percent }
+\newlabel{lst:texture_override}{{4.9}{64}{Texture lookup in \texttt {get\_outputs} (open/cube mode)}{lstlisting.4.9}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.9}{\ignorespaces Texture lookup in \texttt  {get\_outputs} (open/cube mode).}}{64}{lstlisting.4.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.6}Gaussian Parameter Initialization from B\'ezier Surfaces}{64}{subsection.4.3.6}\protected@file@percent }
+\newlabel{subsec:gaussian_init}{{4.3.6}{64}{Gaussian Parameter Initialization from B\'ezier Surfaces}{subsection.4.3.6}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Mean positions}{64}{section*.109}\protected@file@percent }
+\newlabel{subsubsec:init_means}{{4.3.6}{64}{Mean positions}{section*.109}{}}
+\newlabel{eq:gaussian_mean_bezier}{{4.11}{64}{Mean positions}{equation.4.11}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Local tangent frame and quaternion}{65}{section*.110}\protected@file@percent }
+\newlabel{subsubsec:init_quat}{{4.3.6}{65}{Local tangent frame and quaternion}{section*.110}{}}
+\newlabel{eq:fd_u}{{4.12}{65}{Local tangent frame and quaternion}{equation.4.12}{}}
+\newlabel{eq:fd_v}{{4.13}{65}{Local tangent frame and quaternion}{equation.4.13}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Anisotropic scales (log-space)}{65}{section*.111}\protected@file@percent }
+\newlabel{subsubsec:init_scales}{{4.3.6}{65}{Anisotropic scales (log-space)}{section*.111}{}}
+\newlabel{eq:gaussian_scales}{{4.16}{65}{Anisotropic scales (log-space)}{equation.4.16}{}}
+\newlabel{eq:log_scales}{{4.17}{65}{Anisotropic scales (log-space)}{equation.4.17}{}}
+\@writefile{toc}{\contentsline {paragraph}{Role of $\rho $ and $\alpha $.}{65}{section*.112}\protected@file@percent }
+\newlabel{lst:open_resample_scales}{{4.10}{66}{Log-scale recomputation in \code {\_bezier\_open\_resample\_means\_scales}}{lstlisting.4.10}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.10}{\ignorespaces Log-scale recomputation in \nolinkurl  {\_bezier\_open\_resample\_means\_scales}.}}{66}{lstlisting.4.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{Opacity}{66}{section*.113}\protected@file@percent }
+\newlabel{subsubsec:init_opacity}{{4.3.6}{66}{Opacity}{section*.113}{}}
+\newlabel{eq:init_opacity_logit}{{4.18}{66}{Opacity}{equation.4.18}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Summary of stored tensors}{66}{section*.114}\protected@file@percent }
+\newlabel{subsubsec:init_summary}{{4.3.6}{66}{Summary of stored tensors}{section*.114}{}}
+\@writefile{toc}{\contentsline {paragraph}{Contrast with classical COLMAP initialization.}{66}{section*.116}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4.1}{\ignorespaces B\'ezier-mode Gaussian initialization (open/cube). ``Resampled'' = recomputed each forward from current control points.}}{67}{table.caption.115}\protected@file@percent }
+\newlabel{tab:gaussian_init_bezier}{{4.1}{67}{B\'ezier-mode Gaussian initialization (open/cube). ``Resampled'' = recomputed each forward from current control points}{table.caption.115}{}}
+\newlabel{lst:classic_scale}{{4.11}{67}{Classical COLMAP scale init (fallback path, \filepath {splatfacto.py})}{lstlisting.4.11}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.11}{\ignorespaces Classical COLMAP scale init (fallback path, \nolinkurl  {splatfacto.py}).}}{67}{lstlisting.4.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.7}Integration into the Splatting and Training Pipeline}{67}{subsection.4.3.7}\protected@file@percent }
+\newlabel{subsec:bezier_pipeline}{{4.3.7}{67}{Integration into the Splatting and Training Pipeline}{subsection.4.3.7}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Parameter registration and optimizer groups}{67}{section*.117}\protected@file@percent }
+\newlabel{subsubsec:bezier_optimizer}{{4.3.7}{67}{Parameter registration and optimizer groups}{section*.117}{}}
+\citation{kerbl2023gaussian}
+\citation{kerbl2023gaussian}
+\citation{kerbl2023gaussian}
+\@writefile{toc}{\contentsline {paragraph}{Why \texttt  {scales} are omitted from the optimizer.}{68}{section*.118}\protected@file@percent }
+\newlabel{lst:param_groups}{{4.12}{68}{Open/cube B\'ezier parameter groups (\filepath {splatfacto.py})}{lstlisting.4.12}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.12}{\ignorespaces Open/cube B\'ezier parameter groups (\nolinkurl  {splatfacto.py}).}}{68}{lstlisting.4.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Adaptive densification disabled.}{68}{section*.119}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.8}Gradient propagation to control points}{68}{subsection.4.3.8}\protected@file@percent }
+\newlabel{subsec:bezier_gradients}{{4.3.8}{68}{Gradient propagation to control points}{subsection.4.3.8}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.11}{\ignorespaces Backward pass in 3D Gaussian Splatting (adapted from \cite  {kerbl2023gaussian}): loss $\mathcal  {L}$ $\rightarrow $ pixel color $C_i$ $\rightarrow $ opacities $\alpha _n$ and colors $c_n$ $\rightarrow $ projected 2D Gaussian $G'_n$ $\rightarrow $ 3D mean $\boldsymbol  {\mu }_n$, scales $\mathbf  {s}_n$, quaternion $\mathbf  {q}_n$. Red arrows indicate gradient flow; black arrows the forward evaluation chain.}}{69}{figure.caption.120}\protected@file@percent }
+\newlabel{fig:3dgs_grad_graph}{{4.11}{69}{Backward pass in 3D Gaussian Splatting (adapted from \cite {kerbl2023gaussian}): loss $\mathcal {L}$ $\rightarrow $ pixel color $C_i$ $\rightarrow $ opacities $\alpha _n$ and colors $c_n$ $\rightarrow $ projected 2D Gaussian $G'_n$ $\rightarrow $ 3D mean $\boldsymbol {\mu }_n$, scales $\mathbf {s}_n$, quaternion $\mathbf {q}_n$. Red arrows indicate gradient flow; black arrows the forward evaluation chain}{figure.caption.120}{}}
+\@writefile{toc}{\contentsline {paragraph}{B\'ezier extension of the chain.}{69}{section*.121}\protected@file@percent }
+\newlabel{eq:reparam_chain}{{4.21}{69}{B\'ezier extension of the chain}{equation.4.21}{}}
+\newlabel{eq:grad_cp_chain}{{4.22}{69}{B\'ezier extension of the chain}{equation.4.22}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.12}{\ignorespaces Gradient flow in B\'ezier-mode Splatfacto: standard 3DGS splatting derivatives (top) plus reparameterization $\boldsymbol  {\mu }_n,\mathbf  {s}_n\leftarrow \mathbf  {X}_s(\mathbf  {p})$ (blue) and optional texture branch (green). Dashed forward links indicate resampled scales/colors tied to the same $\mathbf  {X}_s$.}}{70}{figure.caption.122}\protected@file@percent }
+\newlabel{fig:bezier_grad_graph}{{4.12}{70}{Gradient flow in B\'ezier-mode Splatfacto: standard 3DGS splatting derivatives (top) plus reparameterization $\boldsymbol {\mu }_n,\mathbf {s}_n\leftarrow \mathbf {X}_s(\mathbf {p})$ (blue) and optional texture branch (green). Dashed forward links indicate resampled scales/colors tied to the same $\mathbf {X}_s$}{figure.caption.122}{}}
+\@writefile{toc}{\contentsline {paragraph}{Implementation notes.}{70}{section*.123}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.9}Regularization Strategy}{70}{subsection.4.3.9}\protected@file@percent }
+\newlabel{subsec:bezier_regularization}{{4.3.9}{70}{Regularization Strategy}{subsection.4.3.9}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Control Point $L_2$ Regularization}{70}{section*.124}\protected@file@percent }
+\newlabel{subsubsec:cp_l2}{{4.3.9}{70}{Control Point $L_2$ Regularization}{section*.124}{}}
+\newlabel{eq:cp_l2}{{4.23}{70}{Control Point $L_2$ Regularization}{equation.4.23}{}}
+\newlabel{lst:cp_l2}{{4.13}{71}{Optional CP $L_2$ term (\filepath {splatfacto.py})}{lstlisting.4.13}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.13}{\ignorespaces Optional CP $L_2$ term (\nolinkurl  {splatfacto.py}).}}{71}{lstlisting.4.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.10}Mask-Based Supervision}{71}{subsection.4.3.10}\protected@file@percent }
+\newlabel{subsec:mask_losses}{{4.3.10}{71}{Mask-Based Supervision}{subsection.4.3.10}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Foreground photometric term}{71}{section*.125}\protected@file@percent }
+\newlabel{subsubsec:mask_fg}{{4.3.10}{71}{Foreground photometric term}{section*.125}{}}
+\newlabel{eq:mask_fg}{{4.24}{71}{Foreground photometric term}{equation.4.24}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Background terms}{72}{section*.126}\protected@file@percent }
+\newlabel{subsubsec:mask_bg}{{4.3.10}{72}{Background terms}{section*.126}{}}
+\newlabel{eq:mask_bg_empty}{{4.25}{72}{Background terms}{equation.4.25}{}}
+\newlabel{eq:mask_sil}{{4.26}{72}{Background terms}{equation.4.26}{}}
+\@writefile{toc}{\contentsline {subsubsection}{Combined mask loss and full objective}{72}{section*.127}\protected@file@percent }
+\newlabel{subsubsec:mask_combined}{{4.3.10}{72}{Combined mask loss and full objective}{section*.127}{}}
+\newlabel{eq:mask_combined}{{4.27}{72}{Combined mask loss and full objective}{equation.4.27}{}}
+\newlabel{eq:mask_total_rgb}{{4.28}{72}{Combined mask loss and full objective}{equation.4.28}{}}
+\newlabel{lst:mask_loss}{{4.14}{72}{FG/BG decomposed loss, emptiness mode (\filepath {splatfacto.py}, RGB; branch used in reported runs)}{lstlisting.4.14}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.14}{\ignorespaces FG/BG decomposed loss, emptiness mode (\nolinkurl  {splatfacto.py}, RGB; branch used in reported runs).}}{72}{lstlisting.4.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{When the masked objective is active.}{73}{section*.128}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {5}Results}{74}{chapter.5}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\newlabel{chap:results}{{5}{74}{Results}{chapter.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5.1}Experimental Setup}{74}{section.5.1}\protected@file@percent }
+\newlabel{sec:results_setup}{{5.1}{74}{Experimental Setup}{section.5.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.1}Evaluation Metrics}{74}{subsection.5.1.1}\protected@file@percent }
+\newlabel{subsec:eval_metrics}{{5.1.1}{74}{Evaluation Metrics}{subsection.5.1.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.2}Test Scenes}{74}{subsection.5.1.2}\protected@file@percent }
+\newlabel{subsec:test_scenes}{{5.1.2}{74}{Test Scenes}{subsection.5.1.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.3}B\'ezier Hyperparameters in the Study}{74}{subsection.5.1.3}\protected@file@percent }
+\newlabel{subsec:bezier_study_hparams}{{5.1.3}{74}{B\'ezier Hyperparameters in the Study}{subsection.5.1.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5.2}Best Result: B\'ezier Structural Model, Cube Mode, Outlier Management}{75}{section.5.2}\protected@file@percent }
+\newlabel{sec:results_best_cube_outliers}{{5.2}{75}{Best Result: B\'ezier Structural Model, Cube Mode, Outlier Management}{section.5.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.1}Qualitative Analysis}{75}{subsection.5.2.1}\protected@file@percent }
+\newlabel{subsec:results_best_qual}{{5.2.1}{75}{Qualitative Analysis}{subsection.5.2.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.1}{\ignorespaces Pizza scene, Cube L1 FgBg Out.: multi-view RGB renders (left), predicted depth maps (center), and exported mesh (right).}}{75}{figure.caption.129}\protected@file@percent }
+\newlabel{fig:best_pizza_qual}{{5.1}{75}{Pizza scene, Cube L1 FgBg Out.: multi-view RGB renders (left), predicted depth maps (center), and exported mesh (right)}{figure.caption.129}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.2}{\ignorespaces Parking meter, Cube L1 FgBg Out.: multi-view RGB renders (left), predicted depth maps (center), and exported mesh (right).}}{76}{figure.caption.130}\protected@file@percent }
+\newlabel{fig:best_parking_qual}{{5.2}{76}{Parking meter, Cube L1 FgBg Out.: multi-view RGB renders (left), predicted depth maps (center), and exported mesh (right)}{figure.caption.130}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.2}Quantitative Evaluation}{76}{subsection.5.2.2}\protected@file@percent }
+\newlabel{subsec:results_best_quant}{{5.2.2}{76}{Quantitative Evaluation}{subsection.5.2.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.3}{\ignorespaces Pizza: unidirectional Chamfer distance (cube-mode ablations).}}{76}{figure.caption.131}\protected@file@percent }
+\newlabel{fig:pizza_cube_chamfer_uni}{{5.3}{76}{Pizza: unidirectional Chamfer distance (cube-mode ablations)}{figure.caption.131}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.4}{\ignorespaces Pizza: bidirectional Chamfer distance (cube-mode ablations).}}{77}{figure.caption.132}\protected@file@percent }
+\newlabel{fig:pizza_cube_chamfer_bid}{{5.4}{77}{Pizza: bidirectional Chamfer distance (cube-mode ablations)}{figure.caption.132}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.5}{\ignorespaces Pizza: bidirectional Chamfer for the best outlier-managed open/cube variants.}}{77}{figure.caption.133}\protected@file@percent }
+\newlabel{fig:pizza_best_chamfer_bid}{{5.5}{77}{Pizza: bidirectional Chamfer for the best outlier-managed open/cube variants}{figure.caption.133}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.6}{\ignorespaces Parking meter: unidirectional Chamfer distance (cube-mode ablations).}}{78}{figure.caption.134}\protected@file@percent }
+\newlabel{fig:parking_cube_chamfer_uni}{{5.6}{78}{Parking meter: unidirectional Chamfer distance (cube-mode ablations)}{figure.caption.134}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.7}{\ignorespaces Parking meter: bidirectional Chamfer distance (cube-mode ablations).}}{78}{figure.caption.135}\protected@file@percent }
+\newlabel{fig:parking_cube_chamfer_bid}{{5.7}{78}{Parking meter: bidirectional Chamfer distance (cube-mode ablations)}{figure.caption.135}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.8}{\ignorespaces Parking meter: bidirectional Chamfer for selected outlier-managed runs.}}{79}{figure.caption.136}\protected@file@percent }
+\newlabel{fig:parking_best_chamfer_bid}{{5.8}{79}{Parking meter: bidirectional Chamfer for selected outlier-managed runs}{figure.caption.136}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.3}Gradient Analysis and Stability}{79}{subsection.5.2.3}\protected@file@percent }
+\newlabel{subsec:results_best_grad}{{5.2.3}{79}{Gradient Analysis and Stability}{subsection.5.2.3}{}}
+\newlabel{fig:pizza_cube_gradients}{{5.9a}{79}{Cube CP gradients}{figure.caption.137}{}}
+\newlabel{sub@fig:pizza_cube_gradients}{{a}{79}{Cube CP gradients}{figure.caption.137}{}}
+\newlabel{fig:pizza_open_gradients}{{5.9b}{79}{Open CP gradients}{figure.caption.137}{}}
+\newlabel{sub@fig:pizza_open_gradients}{{b}{79}{Open CP gradients}{figure.caption.137}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.9}{\ignorespaces Pizza: control-point gradient norms during training.}}{79}{figure.caption.137}\protected@file@percent }
+\newlabel{fig:parking_cube_gradients}{{5.10a}{80}{Cube CP gradients}{figure.caption.138}{}}
+\newlabel{sub@fig:parking_cube_gradients}{{a}{80}{Cube CP gradients}{figure.caption.138}{}}
+\newlabel{fig:parking_open_gradients}{{5.10b}{80}{Open CP gradients}{figure.caption.138}{}}
+\newlabel{sub@fig:parking_open_gradients}{{b}{80}{Open CP gradients}{figure.caption.138}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.10}{\ignorespaces Parking meter: control-point gradient norms during training.}}{80}{figure.caption.138}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5.3}Ablation Study}{80}{section.5.3}\protected@file@percent }
+\newlabel{sec:results_ablation}{{5.3}{80}{Ablation Study}{section.5.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.1}Open mode, full-frame $L_1$}{80}{subsection.5.3.1}\protected@file@percent }
+\newlabel{subsec:ablation_open_l1}{{5.3.1}{80}{Open mode, full-frame $L_1$}{subsection.5.3.1}{}}
+\newlabel{fig:ablation_open_l1_pizza}{{5.11a}{81}{Pizza}{figure.caption.139}{}}
+\newlabel{sub@fig:ablation_open_l1_pizza}{{a}{81}{Pizza}{figure.caption.139}{}}
+\newlabel{fig:ablation_open_l1_parking}{{5.11b}{81}{Parking meter}{figure.caption.139}{}}
+\newlabel{sub@fig:ablation_open_l1_parking}{{b}{81}{Parking meter}{figure.caption.139}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.11}{\ignorespaces Open L1.}}{81}{figure.caption.139}\protected@file@percent }
+\newlabel{fig:ablation_open_l1}{{5.11}{81}{Open L1}{figure.caption.139}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.2}Cube mode, full-frame $L_1$}{81}{subsection.5.3.2}\protected@file@percent }
+\newlabel{subsec:ablation_cube_l1}{{5.3.2}{81}{Cube mode, full-frame $L_1$}{subsection.5.3.2}{}}
+\newlabel{fig:ablation_cube_l1_pizza}{{5.12a}{82}{Pizza}{figure.caption.140}{}}
+\newlabel{sub@fig:ablation_cube_l1_pizza}{{a}{82}{Pizza}{figure.caption.140}{}}
+\newlabel{fig:ablation_cube_l1_parking}{{5.12b}{82}{Parking meter}{figure.caption.140}{}}
+\newlabel{sub@fig:ablation_cube_l1_parking}{{b}{82}{Parking meter}{figure.caption.140}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.12}{\ignorespaces Cube L1.}}{82}{figure.caption.140}\protected@file@percent }
+\newlabel{fig:ablation_cube_l1}{{5.12}{82}{Cube L1}{figure.caption.140}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.3}Open mode, $L_1$ FgBg}{82}{subsection.5.3.3}\protected@file@percent }
+\newlabel{subsec:ablation_open_l1_fgbg}{{5.3.3}{82}{Open mode, $L_1$ FgBg}{subsection.5.3.3}{}}
+\newlabel{fig:ablation_open_l1_fgbg_pizza}{{5.13a}{83}{Pizza}{figure.caption.141}{}}
+\newlabel{sub@fig:ablation_open_l1_fgbg_pizza}{{a}{83}{Pizza}{figure.caption.141}{}}
+\newlabel{fig:ablation_open_l1_fgbg_parking}{{5.13b}{83}{Parking meter}{figure.caption.141}{}}
+\newlabel{sub@fig:ablation_open_l1_fgbg_parking}{{b}{83}{Parking meter}{figure.caption.141}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.13}{\ignorespaces Open L1 FgBg (no outlier filtering).}}{83}{figure.caption.141}\protected@file@percent }
+\newlabel{fig:ablation_open_l1_fgbg}{{5.13}{83}{Open L1 FgBg (no outlier filtering)}{figure.caption.141}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.4}Cube mode, $L_1$ FgBg}{83}{subsection.5.3.4}\protected@file@percent }
+\newlabel{subsec:ablation_cube_l1_fgbg}{{5.3.4}{83}{Cube mode, $L_1$ FgBg}{subsection.5.3.4}{}}
+\newlabel{fig:ablation_cube_l1_fgbg_pizza}{{5.14a}{84}{Pizza}{figure.caption.142}{}}
+\newlabel{sub@fig:ablation_cube_l1_fgbg_pizza}{{a}{84}{Pizza}{figure.caption.142}{}}
+\newlabel{fig:ablation_cube_l1_fgbg_parking}{{5.14b}{84}{Parking meter}{figure.caption.142}{}}
+\newlabel{sub@fig:ablation_cube_l1_fgbg_parking}{{b}{84}{Parking meter}{figure.caption.142}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.14}{\ignorespaces Cube L1 FgBg (no outlier filtering).}}{84}{figure.caption.142}\protected@file@percent }
+\newlabel{fig:ablation_cube_l1_fgbg}{{5.14}{84}{Cube L1 FgBg (no outlier filtering)}{figure.caption.142}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.5}Open mode, $L_1$, outlier filtering and FPS centers}{84}{subsection.5.3.5}\protected@file@percent }
+\newlabel{subsec:ablation_open_l1_outliers_fps}{{5.3.5}{84}{Open mode, $L_1$, outlier filtering and FPS centers}{subsection.5.3.5}{}}
+\newlabel{fig:ablation_open_l1_out_fps_pizza}{{5.15a}{85}{Pizza}{figure.caption.143}{}}
+\newlabel{sub@fig:ablation_open_l1_out_fps_pizza}{{a}{85}{Pizza}{figure.caption.143}{}}
+\newlabel{fig:ablation_open_l1_out_fps_parking}{{5.15b}{85}{Parking meter}{figure.caption.143}{}}
+\newlabel{sub@fig:ablation_open_l1_out_fps_parking}{{b}{85}{Parking meter}{figure.caption.143}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.15}{\ignorespaces Open L1, outlier filtering, FPS centers.}}{85}{figure.caption.143}\protected@file@percent }
+\newlabel{fig:ablation_open_l1_out_fps}{{5.15}{85}{Open L1, outlier filtering, FPS centers}{figure.caption.143}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.6}Cube mode, $L_1$, outlier filtering}{85}{subsection.5.3.6}\protected@file@percent }
+\newlabel{subsec:ablation_cube_l1_outliers}{{5.3.6}{85}{Cube mode, $L_1$, outlier filtering}{subsection.5.3.6}{}}
+\newlabel{fig:ablation_cube_l1_out_pizza}{{5.16a}{86}{Pizza}{figure.caption.144}{}}
+\newlabel{sub@fig:ablation_cube_l1_out_pizza}{{a}{86}{Pizza}{figure.caption.144}{}}
+\newlabel{fig:ablation_cube_l1_out_parking}{{5.16b}{86}{Parking meter}{figure.caption.144}{}}
+\newlabel{sub@fig:ablation_cube_l1_out_parking}{{b}{86}{Parking meter}{figure.caption.144}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.16}{\ignorespaces Cube L1 with outlier filtering.}}{86}{figure.caption.144}\protected@file@percent }
+\newlabel{fig:ablation_cube_l1_out}{{5.16}{86}{Cube L1 with outlier filtering}{figure.caption.144}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.7}Open mode, $L_1$ FgBg, outlier filtering}{86}{subsection.5.3.7}\protected@file@percent }
+\newlabel{subsec:ablation_open_l1_fgbg_outliers}{{5.3.7}{86}{Open mode, $L_1$ FgBg, outlier filtering}{subsection.5.3.7}{}}
+\newlabel{fig:ablation_open_l1_fgbg_out_pizza}{{5.17a}{87}{Pizza}{figure.caption.145}{}}
+\newlabel{sub@fig:ablation_open_l1_fgbg_out_pizza}{{a}{87}{Pizza}{figure.caption.145}{}}
+\newlabel{fig:ablation_open_l1_fgbg_out_parking}{{5.17b}{87}{Parking meter}{figure.caption.145}{}}
+\newlabel{sub@fig:ablation_open_l1_fgbg_out_parking}{{b}{87}{Parking meter}{figure.caption.145}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.17}{\ignorespaces Open L1 FgBg with outlier filtering.}}{87}{figure.caption.145}\protected@file@percent }
+\newlabel{fig:ablation_open_l1_fgbg_out}{{5.17}{87}{Open L1 FgBg with outlier filtering}{figure.caption.145}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.8}Cube mode, $L_1$ FgBg, outlier filtering}{87}{subsection.5.3.8}\protected@file@percent }
+\newlabel{subsec:ablation_cube_l1_fgbg_outliers}{{5.3.8}{87}{Cube mode, $L_1$ FgBg, outlier filtering}{subsection.5.3.8}{}}
+\newlabel{fig:ablation_cube_l1_fgbg_out_pizza}{{5.18a}{88}{Pizza}{figure.caption.146}{}}
+\newlabel{sub@fig:ablation_cube_l1_fgbg_out_pizza}{{a}{88}{Pizza}{figure.caption.146}{}}
+\newlabel{fig:ablation_cube_l1_fgbg_out_parking}{{5.18b}{88}{Parking meter}{figure.caption.146}{}}
+\newlabel{sub@fig:ablation_cube_l1_fgbg_out_parking}{{b}{88}{Parking meter}{figure.caption.146}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.18}{\ignorespaces Cube L1 FgBg with outlier filtering.}}{88}{figure.caption.146}\protected@file@percent }
+\newlabel{fig:ablation_cube_l1_fgbg_out}{{5.18}{88}{Cube L1 FgBg with outlier filtering}{figure.caption.146}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.9}Cube mode, $L_2$ FgBg}{88}{subsection.5.3.9}\protected@file@percent }
+\newlabel{subsec:ablation_cube_l2_fgbg}{{5.3.9}{88}{Cube mode, $L_2$ FgBg}{subsection.5.3.9}{}}
+\newlabel{fig:ablation_cube_l2_pizza}{{5.19a}{89}{Pizza}{figure.caption.147}{}}
+\newlabel{sub@fig:ablation_cube_l2_pizza}{{a}{89}{Pizza}{figure.caption.147}{}}
+\newlabel{fig:ablation_cube_l2_parking}{{5.19b}{89}{Parking meter}{figure.caption.147}{}}
+\newlabel{sub@fig:ablation_cube_l2_parking}{{b}{89}{Parking meter}{figure.caption.147}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.19}{\ignorespaces Cube L2 FgBg.}}{89}{figure.caption.147}\protected@file@percent }
+\newlabel{fig:ablation_cube_l2}{{5.19}{89}{Cube L2 FgBg}{figure.caption.147}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5.4}Comparative Discussion}{89}{section.5.4}\protected@file@percent }
+\newlabel{sec:results_comparative}{{5.4}{89}{Comparative Discussion}{section.5.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5.5}Comparison with Baseline Methods}{90}{section.5.5}\protected@file@percent }
+\newlabel{sec:results_baseline_compare}{{5.5}{90}{Comparison with Baseline Methods}{section.5.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.20}{\ignorespaces Parking meter: classical 3DGS with segmentation (multi-view renders). Note view-dependent floaters and color bleeding outside the object.}}{91}{figure.caption.148}\protected@file@percent }
+\newlabel{fig:baseline_classic_segmented}{{5.20}{91}{Parking meter: classical 3DGS with segmentation (multi-view renders). Note view-dependent floaters and color bleeding outside the object}{figure.caption.148}{}}
+\@writefile{toc}{\contentsline {chapter}{\numberline {6}Conclusions}{92}{chapter.6}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\@writefile{toc}{\contentsline {section}{\numberline {6.1}Main Contributions}{92}{section.6.1}\protected@file@percent }
+\citation{zhang2023sam3d}
+\citation{zhou2025pointsam}
+\@writefile{toc}{\contentsline {section}{\numberline {6.2}Limitations}{93}{section.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6.3}Future Research Directions}{93}{section.6.3}\protected@file@percent }
+\citation{zhou2025pointsam}
+\citation{guedon2024sugar}
+\bibstyle{plainnat}
+\bibdata{references}
+\bibcite{fischler1981ransac}{{1}{1981}{{Fischler and Bolles}}{{}}}
+\bibcite{guedon2024sugar}{{2}{2024}{{Gu{\'e}don and Lepetit}}{{}}}
+\bibcite{hartley2004multiple}{{3}{2004}{{Hartley and Zisserman}}{{}}}
+\bibcite{kerbl2023gaussian}{{4}{2023}{{Kerbl et~al.}}{{Kerbl, Kopanas, Leimk{\"u}hler, and Drettakis}}}
+\bibcite{lin2025depthanything3}{{5}{2025}{{Lin et~al.}}{{Lin, Chen, Liew, Chen, Li, Shi, Feng, and Kang}}}
+\bibcite{liu2023groundingdino}{{6}{2024}{{Liu et~al.}}{{Liu, Zeng, Ren, Li, Zhang, Yang, Jiang, Li, Yang, Su, Zhu, and Zhang}}}
+\bibcite{liu2025bezier}{{7}{2025}{{Liu et~al.}}{{Liu, Zhou, Zhao, and Huang}}}
+\bibcite{lowe2004sift}{{8}{2004}{{Lowe}}{{}}}
+\bibcite{mildenhall2020nerf}{{9}{2020}{{Mildenhall et~al.}}{{Mildenhall, Srinivasan, Tancik, Barron, Ramamoorthi, and Ng}}}
+\bibcite{supersplat2024}{{10}{2024}{{PlayCanvas}}{{}}}
+\bibcite{ravi2024sam2}{{11}{2024}{{Ravi et~al.}}{{Ravi, Gabeur, Hu, Hu, Ryali, Ma, Khedr, R{\"a}dle, Rolland, Gustafson, Mintun, Pan, Alwala, Carion, Wu, Girshick, Doll{\'a}r, and Feichtenhofer}}}
+\bibcite{schoenberger2016sfm}{{12}{2016}{{Sch{\"o}nberger and Frahm}}{{}}}
+\bibcite{schoenberger2016mvs}{{13}{2016}{{Sch{\"o}nberger et~al.}}{{Sch{\"o}nberger, Zheng, Frahm, and Pollefeys}}}
+\bibcite{tancik2023nerfstudio}{{14}{2023}{{Tancik et~al.}}{{Tancik, Weber, Ng, Li, Yi, Kerr, Wang, Kristoffersen, Austin, Salahi, Ahuja, McAllister, and Kanazawa}}}
+\bibcite{yang2024depth}{{15}{2024{}}{{Yang et~al.}}{{Yang, Kang, Huang, Xu, Feng, and Zhao}}}
+\bibcite{yang2024depthanythingv2}{{16}{2024{}}{{Yang et~al.}}{{Yang, Kang, Huang, Xu, Feng, and Zhao}}}
+\bibcite{zhang2023sam3d}{{17}{2023}{{Zhang et~al.}}{{Zhang, Liang, Yang, Zou, Ye, Liu, and Bai}}}
+\bibcite{zhou2018open3d}{{18}{2018}{{Zhou et~al.}}{{Zhou, Park, and Koltun}}}
+\bibcite{zhou2025pointsam}{{19}{2025}{{Zhou et~al.}}{{Zhou, Gu, Chiang, Xiang, and Su}}}
+\bibcite{zwicker2001surface}{{20}{2001}{{Zwicker et~al.}}{{Zwicker, Pfister, van Baar, and Gross}}}
+\bibcite{zwicker2002ewa}{{21}{2002}{{Zwicker et~al.}}{{Zwicker, Pfister, van Baar, and Gross}}}
+\gdef \@abspage@last{99}

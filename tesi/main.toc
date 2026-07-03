@@ -1,0 +1,168 @@
+\contentsline {chapter}{\numberline {1}Introduction}{11}{chapter.1}%
+\contentsline {section}{\numberline {1.1}Motivation}{11}{section.1.1}%
+\contentsline {section}{\numberline {1.2}From Novel View Synthesis to Geometry Reconstruction}{11}{section.1.2}%
+\contentsline {section}{\numberline {1.3}Objectives and Contributions}{12}{section.1.3}%
+\contentsline {section}{\numberline {1.4}Organization of the Thesis}{12}{section.1.4}%
+\contentsline {chapter}{\numberline {2}State of the Art}{13}{chapter.2}%
+\contentsline {section}{\numberline {2.1}Multi-View Geometry}{13}{section.2.1}%
+\contentsline {subsection}{\numberline {2.1.1}Structure-from-Motion}{13}{subsection.2.1.1}%
+\contentsline {paragraph}{Keypoint extraction (SIFT).}{14}{section*.5}%
+\contentsline {paragraph}{Descriptor matching.}{14}{section*.7}%
+\contentsline {paragraph}{Camera model and projection.}{15}{section*.10}%
+\contentsline {paragraph}{SfM reconstruction and the observation graph.}{16}{section*.11}%
+\contentsline {paragraph}{Epipolar geometry.}{16}{section*.12}%
+\contentsline {paragraph}{Essential matrix (calibrated two-view geometry).}{17}{section*.14}%
+\contentsline {paragraph}{Fundamental matrix estimation.}{17}{section*.15}%
+\contentsline {subsection}{\numberline {2.1.2}Camera Pose Estimation}{17}{subsection.2.1.2}%
+\contentsline {paragraph}{PnP algorithms.}{18}{section*.16}%
+\contentsline {subsection}{\numberline {2.1.3}Sparse 3D Reconstruction}{18}{subsection.2.1.3}%
+\contentsline {paragraph}{Triangulation objective.}{18}{section*.17}%
+\contentsline {paragraph}{Linear initialization.}{18}{section*.18}%
+\contentsline {paragraph}{Bundle adjustment.}{18}{section*.19}%
+\contentsline {section}{\numberline {2.2}Neural Scene Representations}{19}{section.2.2}%
+\contentsline {subsection}{\numberline {2.2.1}Neural Radiance Fields}{19}{subsection.2.2.1}%
+\contentsline {paragraph}{Neural Radiance Fields (NeRF).}{19}{section*.20}%
+\contentsline {paragraph}{Ray casting and volume rendering.}{20}{section*.22}%
+\contentsline {paragraph}{Discrete approximation.}{20}{section*.23}%
+\contentsline {paragraph}{Training procedure.}{21}{section*.24}%
+\contentsline {subsection}{\numberline {2.2.2}3D Gaussian Splatting}{21}{subsection.2.2.2}%
+\contentsline {subsubsection}{Pipeline overview}{22}{section*.26}%
+\contentsline {subsubsection}{Relation with previous splatting methods}{22}{section*.28}%
+\contentsline {paragraph}{Surface splatting.}{23}{section*.29}%
+\contentsline {paragraph}{Volume splatting and EWA volume splatting.}{23}{section*.31}%
+\contentsline {subsubsection}{Gaussian Parameterization}{24}{section*.32}%
+\contentsline {subsubsection}{Splatting and rendering}{25}{section*.34}%
+\contentsline {subsubsection}{Transformation from world space to camera space}{25}{section*.36}%
+\contentsline {subsubsection}{Projection to ray space}{26}{section*.37}%
+\contentsline {subsubsection}{From ray space to the image-plane footprint}{26}{section*.38}%
+\contentsline {subsubsection}{Projection to screen space}{27}{section*.39}%
+\contentsline {subsubsection}{Rendering via Alpha Compositing}{27}{section*.40}%
+\contentsline {subsubsection}{Photometric Optimization}{28}{section*.42}%
+\contentsline {subsubsection}{Adaptive density control}{28}{section*.43}%
+\contentsline {subsubsection}{Tile-based rasterization and visibility ordering}{30}{section*.45}%
+\contentsline {subsubsection}{Limitations for Geometry Recovery}{30}{section*.47}%
+\contentsline {section}{\numberline {2.3}Depth in Neural Rendering}{31}{section.2.3}%
+\contentsline {subsection}{\numberline {2.3.1}Depth as Expected Value Along a Ray}{32}{subsection.2.3.1}%
+\contentsline {paragraph}{Discrete volume rendering along a ray.}{32}{section*.49}%
+\contentsline {paragraph}{Accumulated depth vs.\ expected depth.}{32}{section*.50}%
+\contentsline {paragraph}{Relationship to compositing weights.}{32}{section*.51}%
+\contentsline {paragraph}{Semantic differences and failure modes.}{33}{section*.52}%
+\contentsline {subsection}{\numberline {2.3.2}Monocular Metric Depth Estimation}{33}{subsection.2.3.2}%
+\contentsline {paragraph}{From relative predictions to metric depth.}{33}{section*.53}%
+\contentsline {subsection}{\numberline {2.3.3}Depth Anything v3}{33}{subsection.2.3.3}%
+\contentsline {paragraph}{Positioning relative to Depth Anything 1--2.}{34}{section*.54}%
+\contentsline {paragraph}{Core outputs: depth maps and ray maps.}{34}{section*.55}%
+\contentsline {paragraph}{Architecture (what is minimal and what is not).}{34}{section*.56}%
+\contentsline {paragraph}{Training as teacher--student with pseudo-depth alignment (padre--figlio).}{35}{section*.58}%
+\contentsline {paragraph}{Implementation-scale training details (why DA3 is not ``just a bigger DA2'').}{36}{section*.59}%
+\contentsline {paragraph}{Use in this thesis.}{36}{section*.60}%
+\contentsline {section}{\numberline {2.4}Surface-Based Representations}{36}{section.2.4}%
+\contentsline {subsection}{\numberline {2.4.1}B\'ezier Curves and Surfaces}{36}{subsection.2.4.1}%
+\contentsline {paragraph}{Bernstein basis and B\'ezier curves.}{37}{section*.61}%
+\contentsline {paragraph}{Geometric meaning of control points.}{37}{section*.63}%
+\contentsline {paragraph}{Tensor-product B\'ezier surfaces.}{37}{section*.64}%
+\contentsline {paragraph}{Local shape control and continuity across patches.}{38}{section*.66}%
+\contentsline {subsection}{\numberline {2.4.2}B\'ezier-Based Splatting Approaches}{38}{subsection.2.4.2}%
+\contentsline {paragraph}{From curves in 2D to surfaces in 3D (conceptual lift).}{38}{section*.67}%
+\contentsline {paragraph}{How this thesis uses surfaces ``like curves'' at a high level.}{39}{section*.68}%
+\contentsline {paragraph}{Pruning/densification as a geometric analogue.}{39}{section*.69}%
+\contentsline {section}{\numberline {2.5}Semantic Object Segmentation}{39}{section.2.5}%
+\contentsline {subsection}{\numberline {2.5.1}GroundingDINO}{40}{subsection.2.5.1}%
+\contentsline {paragraph}{From closed-set detection to language-grounded detection.}{40}{section*.70}%
+\contentsline {paragraph}{Architecture overview.}{40}{section*.71}%
+\contentsline {paragraph}{Language-guided query selection (mathematical intuition).}{41}{section*.73}%
+\contentsline {paragraph}{Cross-modality decoder.}{41}{section*.74}%
+\contentsline {paragraph}{Sub-sentence text representation.}{42}{section*.75}%
+\contentsline {paragraph}{Training objective and matching.}{42}{section*.76}%
+\contentsline {subsection}{\numberline {2.5.2}SAM2}{42}{subsection.2.5.2}%
+\contentsline {paragraph}{Task definition: from SAM (image) to masklets (video).}{42}{section*.77}%
+\contentsline {paragraph}{Architecture.}{42}{section*.78}%
+\contentsline {paragraph}{Training and data.}{43}{section*.80}%
+\contentsline {paragraph}{Use in this thesis.}{43}{section*.81}%
+\contentsline {chapter}{\numberline {3}Tools and Frameworks}{44}{chapter.3}%
+\contentsline {section}{\numberline {3.1}Data preparation}{44}{section.3.1}%
+\contentsline {section}{\numberline {3.2}Nerfstudio and Splatfacto}{44}{section.3.2}%
+\contentsline {section}{\numberline {3.3}Pretrained models (Hugging Face Hub)}{45}{section.3.3}%
+\contentsline {subsection}{\numberline {3.3.1}Depth Anything 3 (metric depth)}{45}{subsection.3.3.1}%
+\contentsline {subsection}{\numberline {3.3.2}Grounding DINO and SAM~2 (segmentation)}{46}{subsection.3.3.2}%
+\contentsline {section}{\numberline {3.4}Auxiliary tools}{46}{section.3.4}%
+\contentsline {chapter}{\numberline {4}Methodology}{47}{chapter.4}%
+\contentsline {section}{\numberline {4.1}Baseline: Classical 3D Gaussian Splatting}{47}{section.4.1}%
+\contentsline {subsection}{\numberline {4.1.1}Photometric Loss}{47}{subsection.4.1.1}%
+\contentsline {subsection}{\numberline {4.1.2}Expected Depth Estimation}{48}{subsection.4.1.2}%
+\contentsline {subsection}{\numberline {4.1.3}Observed Geometric Limitations}{49}{subsection.4.1.3}%
+\contentsline {section}{\numberline {4.2}Depth-Supervised Optimization}{50}{section.4.2}%
+\contentsline {subsection}{\numberline {4.2.1}Ground Truth Depth Generation}{50}{subsection.4.2.1}%
+\contentsline {paragraph}{Preprocessing and caching.}{50}{section*.85}%
+\contentsline {subsection}{\numberline {4.2.2}Depth Loss Formulation}{51}{subsection.4.2.2}%
+\contentsline {subsection}{\numberline {4.2.3}Joint Optimization Strategy}{52}{subsection.4.2.3}%
+\contentsline {paragraph}{Role of COLMAP color initialization.}{52}{section*.87}%
+\contentsline {subsection}{\numberline {4.2.4}Qualitative Trade-offs: RGB vs.\ Depth Loss}{52}{subsection.4.2.4}%
+\contentsline {paragraph}{Training with $\mathcal {L}_{\mathrm {rgb}}$ (photometric loss).}{52}{section*.88}%
+\contentsline {paragraph}{Training with $\mathcal {L}_{\mathrm {depth}}$ (depth loss).}{53}{section*.89}%
+\contentsline {subsection}{\numberline {4.2.5}Failure Modes and Instabilities}{54}{subsection.4.2.5}%
+\contentsline {section}{\numberline {4.3}Structural Modification via B\'ezier Surfaces}{55}{section.4.3}%
+\contentsline {subsection}{\numberline {4.3.1}Semantic Object Isolation}{55}{subsection.4.3.1}%
+\contentsline {paragraph}{Configuration.}{56}{section*.94}%
+\contentsline {subsection}{\numberline {4.3.2}Seed Point Preprocessing}{56}{subsection.4.3.2}%
+\contentsline {subsubsection}{k-NN Outlier Filtering}{56}{section*.95}%
+\contentsline {subsection}{\numberline {4.3.3}B\'ezier Surface Initialization}{58}{subsection.4.3.3}%
+\contentsline {subsubsection}{Control Point Estimation}{59}{section*.98}%
+\contentsline {paragraph}{Open-surface patches.}{59}{section*.99}%
+\contentsline {paragraph}{Cube-mode patches.}{60}{section*.100}%
+\contentsline {subsubsection}{Surface Sampling and Gaussian Seeding}{60}{section*.101}%
+\contentsline {paragraph}{Local tangent frame.}{60}{section*.102}%
+\contentsline {paragraph}{Anisotropic scales.}{60}{section*.103}%
+\contentsline {paragraph}{Appearance and semantics.}{61}{section*.104}%
+\contentsline {subsection}{\numberline {4.3.4}B\'ezier Representations}{61}{subsection.4.3.4}%
+\contentsline {subsubsection}{Open-Surface Mode}{61}{section*.105}%
+\contentsline {subsubsection}{Cube-Based B\'ezier Surfaces}{62}{section*.106}%
+\contentsline {subsection}{\numberline {4.3.5}B\'ezier Surface Parameterization}{63}{subsection.4.3.5}%
+\contentsline {paragraph}{In other words.}{63}{section*.108}%
+\contentsline {subsection}{\numberline {4.3.6}Gaussian Parameter Initialization from B\'ezier Surfaces}{64}{subsection.4.3.6}%
+\contentsline {subsubsection}{Mean positions}{64}{section*.109}%
+\contentsline {subsubsection}{Local tangent frame and quaternion}{65}{section*.110}%
+\contentsline {subsubsection}{Anisotropic scales (log-space)}{65}{section*.111}%
+\contentsline {paragraph}{Role of $\rho $ and $\alpha $.}{65}{section*.112}%
+\contentsline {subsubsection}{Opacity}{66}{section*.113}%
+\contentsline {subsubsection}{Summary of stored tensors}{66}{section*.114}%
+\contentsline {paragraph}{Contrast with classical COLMAP initialization.}{66}{section*.116}%
+\contentsline {subsection}{\numberline {4.3.7}Integration into the Splatting and Training Pipeline}{67}{subsection.4.3.7}%
+\contentsline {subsubsection}{Parameter registration and optimizer groups}{67}{section*.117}%
+\contentsline {paragraph}{Why \texttt {scales} are omitted from the optimizer.}{68}{section*.118}%
+\contentsline {paragraph}{Adaptive densification disabled.}{68}{section*.119}%
+\contentsline {subsection}{\numberline {4.3.8}Gradient propagation to control points}{68}{subsection.4.3.8}%
+\contentsline {paragraph}{B\'ezier extension of the chain.}{69}{section*.121}%
+\contentsline {paragraph}{Implementation notes.}{70}{section*.123}%
+\contentsline {subsection}{\numberline {4.3.9}Regularization Strategy}{70}{subsection.4.3.9}%
+\contentsline {subsubsection}{Control Point $L_2$ Regularization}{70}{section*.124}%
+\contentsline {subsection}{\numberline {4.3.10}Mask-Based Supervision}{71}{subsection.4.3.10}%
+\contentsline {subsubsection}{Foreground photometric term}{71}{section*.125}%
+\contentsline {subsubsection}{Background terms}{72}{section*.126}%
+\contentsline {subsubsection}{Combined mask loss and full objective}{72}{section*.127}%
+\contentsline {paragraph}{When the masked objective is active.}{73}{section*.128}%
+\contentsline {chapter}{\numberline {5}Results}{74}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Experimental Setup}{74}{section.5.1}%
+\contentsline {subsection}{\numberline {5.1.1}Evaluation Metrics}{74}{subsection.5.1.1}%
+\contentsline {subsection}{\numberline {5.1.2}Test Scenes}{74}{subsection.5.1.2}%
+\contentsline {subsection}{\numberline {5.1.3}B\'ezier Hyperparameters in the Study}{74}{subsection.5.1.3}%
+\contentsline {section}{\numberline {5.2}Best Result: B\'ezier Structural Model, Cube Mode, Outlier Management}{75}{section.5.2}%
+\contentsline {subsection}{\numberline {5.2.1}Qualitative Analysis}{75}{subsection.5.2.1}%
+\contentsline {subsection}{\numberline {5.2.2}Quantitative Evaluation}{76}{subsection.5.2.2}%
+\contentsline {subsection}{\numberline {5.2.3}Gradient Analysis and Stability}{79}{subsection.5.2.3}%
+\contentsline {section}{\numberline {5.3}Ablation Study}{80}{section.5.3}%
+\contentsline {subsection}{\numberline {5.3.1}Open mode, full-frame $L_1$}{80}{subsection.5.3.1}%
+\contentsline {subsection}{\numberline {5.3.2}Cube mode, full-frame $L_1$}{81}{subsection.5.3.2}%
+\contentsline {subsection}{\numberline {5.3.3}Open mode, $L_1$ FgBg}{82}{subsection.5.3.3}%
+\contentsline {subsection}{\numberline {5.3.4}Cube mode, $L_1$ FgBg}{83}{subsection.5.3.4}%
+\contentsline {subsection}{\numberline {5.3.5}Open mode, $L_1$, outlier filtering and FPS centers}{84}{subsection.5.3.5}%
+\contentsline {subsection}{\numberline {5.3.6}Cube mode, $L_1$, outlier filtering}{85}{subsection.5.3.6}%
+\contentsline {subsection}{\numberline {5.3.7}Open mode, $L_1$ FgBg, outlier filtering}{86}{subsection.5.3.7}%
+\contentsline {subsection}{\numberline {5.3.8}Cube mode, $L_1$ FgBg, outlier filtering}{87}{subsection.5.3.8}%
+\contentsline {subsection}{\numberline {5.3.9}Cube mode, $L_2$ FgBg}{88}{subsection.5.3.9}%
+\contentsline {section}{\numberline {5.4}Comparative Discussion}{89}{section.5.4}%
+\contentsline {section}{\numberline {5.5}Comparison with Baseline Methods}{90}{section.5.5}%
+\contentsline {chapter}{\numberline {6}Conclusions}{92}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Main Contributions}{92}{section.6.1}%
+\contentsline {section}{\numberline {6.2}Limitations}{93}{section.6.2}%
+\contentsline {section}{\numberline {6.3}Future Research Directions}{93}{section.6.3}%

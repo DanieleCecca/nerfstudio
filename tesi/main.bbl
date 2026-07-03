@@ -1,0 +1,158 @@
+\begin{thebibliography}{21}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Fischler and Bolles(1981)]{fischler1981ransac}
+Martin~A. Fischler and Robert~C. Bolles.
+\newblock Random sample consensus: A paradigm for model fitting with
+  applications to image analysis and automated cartography.
+\newblock \emph{Communications of the ACM}, 24\penalty0 (6):\penalty0 381--395,
+  1981.
+
+\bibitem[Gu{\'e}don and Lepetit(2024)]{guedon2024sugar}
+Antoine Gu{\'e}don and Vincent Lepetit.
+\newblock Sugar: Surface-aligned gaussian splatting for efficient 3d mesh
+  reconstruction and high-quality mesh rendering.
+\newblock \emph{IEEE/CVF Conference on Computer Vision and Pattern Recognition
+  (CVPR)}, 2024.
+
+\bibitem[Hartley and Zisserman(2004)]{hartley2004multiple}
+Richard Hartley and Andrew Zisserman.
+\newblock \emph{Multiple View Geometry in Computer Vision}.
+\newblock Cambridge University Press, 2 edition, 2004.
+
+\bibitem[Kerbl et~al.(2023)Kerbl, Kopanas, Leimk{\"u}hler, and
+  Drettakis]{kerbl2023gaussian}
+Bernhard Kerbl, Georgios Kopanas, Thomas Leimk{\"u}hler, and George Drettakis.
+\newblock 3d gaussian splatting for real-time radiance field rendering.
+\newblock \emph{ACM Transactions on Graphics}, 42\penalty0 (4), 2023.
+
+\bibitem[Lin et~al.(2025)Lin, Chen, Liew, Chen, Li, Shi, Feng, and
+  Kang]{lin2025depthanything3}
+Haotong Lin, Sili Chen, Jun~Hao Liew, Donny~Y. Chen, Zhenyu Li, Guang Shi,
+  Jiashi Feng, and Bingyi Kang.
+\newblock Depth anything 3: Recovering the visual space from any views, 2025.
+\newblock URL \url{https://arxiv.org/pdf/2511.10647}.
+
+\bibitem[Liu et~al.(2024)Liu, Zeng, Ren, Li, Zhang, Yang, Jiang, Li, Yang, Su,
+  Zhu, and Zhang]{liu2023groundingdino}
+Shilong Liu, Zhaoyang Zeng, Tianhe Ren, Feng Li, Hao Zhang, Jie Yang, Qing
+  Jiang, Chunyuan Li, Jianwei Yang, Hang Su, Jun Zhu, and Lei Zhang.
+\newblock Grounding {DINO}: Marrying {DINO} with grounded pre-training for
+  open-set object detection, 2024.
+\newblock URL \url{https://arxiv.org/pdf/2303.05499}.
+\newblock ECCV 2024.
+
+\bibitem[Liu et~al.(2025)Liu, Zhou, Zhao, and Huang]{liu2025bezier}
+Xi~Liu, Chaoyi Zhou, Nanxuan Zhao, and Siyu Huang.
+\newblock B\'ezier splatting for fast and differentiable vector graphics
+  rendering, 2025.
+\newblock URL \url{https://arxiv.org/pdf/2503.16424}.
+
+\bibitem[Lowe(2004)]{lowe2004sift}
+David~G. Lowe.
+\newblock Distinctive image features from scale-invariant keypoints.
+\newblock \emph{International Journal of Computer Vision}, 60\penalty0
+  (2):\penalty0 91--110, 2004.
+
+\bibitem[Mildenhall et~al.(2020)Mildenhall, Srinivasan, Tancik, Barron,
+  Ramamoorthi, and Ng]{mildenhall2020nerf}
+Ben Mildenhall, Pratul~P. Srinivasan, Matthew Tancik, Jonathan~T. Barron, Ravi
+  Ramamoorthi, and Ren Ng.
+\newblock Nerf: Representing scenes as neural radiance fields for view
+  synthesis.
+\newblock In \emph{Proceedings of the European Conference on Computer Vision
+  (ECCV)}, 2020.
+
+\bibitem[{PlayCanvas}(2024)]{supersplat2024}
+{PlayCanvas}.
+\newblock Supersplat: 3d gaussian splatting editor and viewer.
+\newblock \url{https://superspl.at/}, 2024.
+\newblock Web-based tool for inspecting and editing exported 3DGS assets.
+
+\bibitem[Ravi et~al.(2024)Ravi, Gabeur, Hu, Hu, Ryali, Ma, Khedr, R{\"a}dle,
+  Rolland, Gustafson, Mintun, Pan, Alwala, Carion, Wu, Girshick, Doll{\'a}r,
+  and Feichtenhofer]{ravi2024sam2}
+Nikhila Ravi, Valentin Gabeur, Yuan-Ting Hu, Ronghang Hu, Chaitanya Ryali,
+  Tengyu Ma, Haitham Khedr, Roman R{\"a}dle, Chloe Rolland, Laura Gustafson,
+  Eric Mintun, Junting Pan, Kalyan~Vasudev Alwala, Nicolas Carion, Chao-Yuan
+  Wu, Ross Girshick, Piotr Doll{\'a}r, and Christoph Feichtenhofer.
+\newblock {SAM} 2: Segment anything in images and videos, 2024.
+\newblock URL \url{https://arxiv.org/pdf/2408.00714}.
+
+\bibitem[Sch{\"o}nberger and Frahm(2016)]{schoenberger2016sfm}
+Johannes~L. Sch{\"o}nberger and Jan-Michael Frahm.
+\newblock Structure-from-motion revisited.
+\newblock In \emph{Proceedings of the IEEE Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, pages 4104--4113, 2016.
+
+\bibitem[Sch{\"o}nberger et~al.(2016)Sch{\"o}nberger, Zheng, Frahm, and
+  Pollefeys]{schoenberger2016mvs}
+Johannes~L. Sch{\"o}nberger, Enliang Zheng, Jan-Michael Frahm, and Marc
+  Pollefeys.
+\newblock Pixelwise view selection for unstructured multi-view stereo.
+\newblock In \emph{Proceedings of the European Conference on Computer Vision
+  (ECCV)}, pages 501--518, 2016.
+
+\bibitem[Tancik et~al.(2023)Tancik, Weber, Ng, Li, Yi, Kerr, Wang,
+  Kristoffersen, Austin, Salahi, Ahuja, McAllister, and
+  Kanazawa]{tancik2023nerfstudio}
+Matthew Tancik, Ethan Weber, Evonne Ng, Ruilong Li, Brent Yi, Justin Kerr,
+  Terrance Wang, Alexander Kristoffersen, Jake Austin, Kamyar Salahi, Abhik
+  Ahuja, David McAllister, and Angjoo Kanazawa.
+\newblock Nerfstudio: A modular framework for neural radiance field
+  development.
+\newblock In \emph{ACM SIGGRAPH 2023 Conference Proceedings}, SIGGRAPH '23,
+  2023.
+\newblock URL \url{https://arxiv.org/abs/2302.04264}.
+
+\bibitem[Yang et~al.(2024{\natexlab{a}})Yang, Kang, Huang, Xu, Feng, and
+  Zhao]{yang2024depth}
+Lihe Yang, Bingyi Kang, Zilong Huang, Xiaogang Xu, Jiashi Feng, and Hengshuang
+  Zhao.
+\newblock Depth anything: Unleashing the power of large-scale unlabeled data.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition (CVPR)}, 2024{\natexlab{a}}.
+
+\bibitem[Yang et~al.(2024{\natexlab{b}})Yang, Kang, Huang, Xu, Feng, and
+  Zhao]{yang2024depthanythingv2}
+Lihe Yang, Bingyi Kang, Zilong Huang, Xiaogang Xu, Jiashi Feng, and Hengshuang
+  Zhao.
+\newblock Depth anything v2.
+\newblock \emph{arXiv preprint arXiv:2406.09414}, 2024{\natexlab{b}}.
+
+\bibitem[Zhang et~al.(2023)Zhang, Liang, Yang, Zou, Ye, Liu, and
+  Bai]{zhang2023sam3d}
+Dingyuan Zhang, Dingkang Liang, Hongcheng Yang, Zhikang Zou, Xiaoqing Ye, Zhe
+  Liu, and Xiang Bai.
+\newblock Sam3d: Zero-shot 3d object detection via segment anything model,
+  2023.
+
+\bibitem[Zhou et~al.(2018)Zhou, Park, and Koltun]{zhou2018open3d}
+Qian-Yi Zhou, Jaesik Park, and Vladlen Koltun.
+\newblock Open3d: A modern library for 3d data processing.
+\newblock \emph{arXiv preprint arXiv:1805.0984}, 2018.
+
+\bibitem[Zhou et~al.(2025)Zhou, Gu, Chiang, Xiang, and Su]{zhou2025pointsam}
+Yuchen Zhou, Jiayuan Gu, Tung~Yen Chiang, Fanbo Xiang, and Hao Su.
+\newblock Point-sam: Promptable 3d segmentation model for point clouds.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2025.
+
+\bibitem[Zwicker et~al.(2001)Zwicker, Pfister, van Baar, and
+  Gross]{zwicker2001surface}
+Matthias Zwicker, Hanspeter Pfister, Jeroen van Baar, and Markus Gross.
+\newblock Surface splatting.
+\newblock In \emph{Proceedings of the 28th Annual Conference on Computer
+  Graphics and Interactive Techniques (SIGGRAPH)}, pages 371--378, 2001.
+
+\bibitem[Zwicker et~al.(2002)Zwicker, Pfister, van Baar, and
+  Gross]{zwicker2002ewa}
+Matthias Zwicker, Hanspeter Pfister, Jeroen van Baar, and Markus Gross.
+\newblock Ewa volume splatting.
+\newblock \emph{Proceedings of IEEE Visualization}, pages 29--36, 2002.
+
+\end{thebibliography}
